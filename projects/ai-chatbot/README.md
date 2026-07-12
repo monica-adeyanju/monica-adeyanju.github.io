@@ -1,6 +1,6 @@
 # Serverless AI Chatbot
 
-A fully serverless REST API that lets anyone chat with an AI (Claude via Amazon Bedrock). It remembers conversations using DynamoDB. The whole thing deploys as a single CloudFormation stack — no servers to manage, no Docker containers, nothing to SSH into.
+A fully serverless AI chatbot with a web interface, powered by **Amazon Bedrock (Claude)** with conversation history stored in **DynamoDB**. Deploy the entire stack — backend, frontend, and CDN — with a single CloudFormation template. No manual steps.
 
 ## How It Works
 
@@ -12,57 +12,66 @@ User sends message → API Gateway → Lambda → Bedrock (Claude) → Response 
 
 **The flow:**
 
-1. A user sends a POST request to `/chat` with a message (e.g., "What is serverless?")
-2. **API Gateway** receives the HTTPS request and routes it to Lambda
-3. **Lambda** (Python function) does the work:
+1. User opens the CloudFront URL → loads the chat UI from S3
+2. User types a message → JavaScript sends a POST request to API Gateway
+3. **API Gateway** routes the request to **Lambda**
+4. **Lambda** (Python) does the work:
    - Loads previous messages from DynamoDB for that session (so Claude has context)
-   - Sends the full conversation to **Bedrock** (Amazon's managed AI service running Claude)
+   - Sends the full conversation to **Bedrock** (Claude)
    - Gets the AI response back
-   - Stores both the user message and AI reply in **DynamoDB** with a TTL (auto-deletes after 7 days)
-   - Returns the response to the user
-4. User gets back the AI answer + a session ID to continue the conversation
+   - Stores both messages in **DynamoDB** with a TTL (auto-deletes after 7 days)
+   - Returns the response
+5. User sees the AI reply in the chat interface and can continue the conversation
 
 ## AWS Services Used
 
 | Service | Role |
 |---------|------|
 | **API Gateway** | The front door — accepts HTTPS requests, handles CORS |
-| **Lambda** | The brain — runs the Python code, no server to maintain |
-| **Bedrock** | The AI — hosts Claude, you pay per token, no GPU management |
+| **Lambda** | The brain — runs the Python chatbot code (deployed inline, no manual upload) |
+| **Bedrock** | The AI — hosts Claude, pay per token, no GPU management |
 | **DynamoDB** | The memory — stores chat history per session, scales infinitely |
-| **S3** | The host — stores the chat UI static files (HTML, CSS, JS) |
+| **S3** | The host — stores the chat UI files (auto-deployed by the stack) |
 | **CloudFront** | The CDN — serves the UI globally with HTTPS and caching |
+| **Custom Resource** | The automator — injects the API endpoint into the frontend and uploads to S3 |
 | **CloudFormation** | The deployer — defines all resources as code, one command to create/destroy |
 
 ## Architecture Diagram
 
 ```
-┌──────────┐     ┌─────────────────┐     ┌────────────┐     ┌─────────────────┐
-│  Client  │────▶│  API Gateway    │────▶│   Lambda   │────▶│  Amazon Bedrock  │
-│          │◀────│  (REST API)     │◀────│  (Python)  │◀────│  (Claude)        │
-└──────────┘     └─────────────────┘     └─────┬──────┘     └─────────────────┘
-      │                                         │
-      │                                         ▼
-      │                                  ┌─────────────┐
-      │                                  │  DynamoDB   │
-      │                                  │ (History)   │
-      │                                  └─────────────┘
-      │
-      ▼
+┌──────────────────┐
+│   User Browser   │
+└────────┬─────────┘
+         │
+         ▼
 ┌─────────────────┐     ┌─────────────┐
-│  CloudFront     │────▶│  S3 Bucket  │
-│  (CDN)          │     │  (Chat UI)  │
-└─────────────────┘     └─────────────┘
+│  CloudFront     │────▶│  S3 Bucket  │  ← Chat UI (auto-deployed)
+│  (HTTPS CDN)    │     │  (Frontend) │
+└────────┬────────┘     └─────────────┘
+         │
+         │ API calls
+         ▼
+┌─────────────────┐     ┌────────────┐     ┌─────────────────┐
+│  API Gateway    │────▶│   Lambda   │────▶│  Amazon Bedrock  │
+│  (REST API)     │◀────│  (Python)  │◀────│  (Claude)        │
+└─────────────────┘     └─────┬──────┘     └─────────────────┘
+                              │
+                              ▼
+                       ┌─────────────┐
+                       │  DynamoDB   │
+                       │  (History)  │
+                       └─────────────┘
 ```
 
 ## Features
 
+- **Chat Web Interface** — Clean UI served via CloudFront, auto-deployed with correct API endpoint
 - **Conversational AI** — Powered by Claude via Amazon Bedrock
 - **Session Memory** — Maintains conversation context across messages
-- **Auto-Cleanup** — TTL-based expiration of old conversations
-- **CORS Enabled** — Ready for frontend integration
+- **Auto-Cleanup** — TTL-based expiration of old conversations (configurable)
+- **Fully Automated** — Lambda code, frontend files, and API wiring all deploy automatically
 - **Zero Servers** — Fully serverless, pay only for what you use
-- **One-Click Deploy** — Single CloudFormation stack, no manual steps
+- **One-Click Deploy** — Single CloudFormation stack, nothing to configure manually
 
 ## Deploy to Your AWS Account
 
@@ -90,7 +99,7 @@ aws cloudformation deploy \
     BedrockModelId=anthropic.claude-3-haiku-20240307-v1:0 \
     ConversationTTLDays=7
 
-# Get your API endpoint
+# Get your outputs (including the chat UI URL)
 aws cloudformation describe-stacks \
   --stack-name ai-chatbot \
   --query 'Stacks[0].Outputs' \
@@ -109,11 +118,26 @@ aws cloudformation describe-stacks \
    - **StageName**: API stage name (default: prod)
 6. Check "I acknowledge that this template creates IAM resources"
 7. Click **Create stack**
+8. Once complete, find the **ChatUIURL** in the Outputs tab — that's your chatbot
+
+## What Gets Deployed (Automatically)
+
+When the stack creates successfully, you get:
+
+| Output | What It Is |
+|--------|-----------|
+| **ChatUIURL** | Your chatbot web interface URL (CloudFront) |
+| **ApiEndpoint** | The REST API base URL |
+| **ChatEndpoint** | POST here to send messages programmatically |
+| **HistoryEndpoint** | GET conversation history |
+| **ConversationTableName** | DynamoDB table name |
+
+The frontend is deployed automatically with the correct API endpoint injected — no manual configuration needed.
 
 ## Prerequisites
 
 - An AWS account with [Bedrock model access enabled](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) for Claude
-- AWS CLI configured (for CLI deployment)
+- AWS CLI configured (for CLI deployment only)
 
 ### Enable Bedrock Model Access
 
@@ -123,12 +147,13 @@ aws cloudformation describe-stacks \
 4. Enable access for **Anthropic → Claude** models
 5. Wait for access status to show "Access granted"
 
-## API Usage
+## API Usage (Programmatic)
+
+You can also interact with the chatbot via API directly (for integrations, testing, etc.):
 
 ### Send a Message
 
 ```bash
-# Start a new conversation
 curl -X POST https://YOUR_API_ENDPOINT/prod/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "What is serverless computing?"}'
@@ -141,7 +166,7 @@ curl -X POST https://YOUR_API_ENDPOINT/prod/chat \
 ```
 
 ```bash
-# Continue the conversation (use the sessionId from above)
+# Continue the conversation
 curl -X POST https://YOUR_API_ENDPOINT/prod/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "How does it compare to containers?", "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}'
@@ -156,7 +181,7 @@ curl "https://YOUR_API_ENDPOINT/prod/history?sessionId=a1b2c3d4-e5f6-7890-abcd-e
 # {
 #   "sessionId": "a1b2c3d4-...",
 #   "messages": [
-#     {"role": "user", "content": "What is serverless computing?", "timestamp": 1234567890},
+#     {"role": "user", "content": "What is serverless?", "timestamp": 1234567890},
 #     {"role": "assistant", "content": "Serverless computing is...", "timestamp": 1234567891}
 #   ],
 #   "count": 2
@@ -166,52 +191,17 @@ curl "https://YOUR_API_ENDPOINT/prod/history?sessionId=a1b2c3d4-e5f6-7890-abcd-e
 ## Cost Estimate
 
 For light usage (~100 conversations/day):
-- **Lambda**: Free tier covers it (1M requests/month free)
-- **API Gateway**: ~$0.35/month (100k requests)
-- **DynamoDB**: Free tier covers it (25 GB storage, 25 WCU/RCU)
-- **Bedrock (Claude Haiku)**: ~$0.50–$2.00/month depending on message length
+
+| Service | Cost |
+|---------|------|
+| Lambda | Free tier (1M requests/month free) |
+| API Gateway | ~$0.35/month |
+| DynamoDB | Free tier (25 GB, 25 WCU/RCU) |
+| S3 | ~$0.01/month |
+| CloudFront | Free tier (1 TB/month) |
+| Bedrock (Claude Haiku) | ~$0.50–$2.00/month |
 
 **Total: Under $3/month** for a personal project.
-
-## Updating the Lambda Code
-
-The CloudFormation template includes inline placeholder code. To deploy the full Lambda function:
-
-```bash
-# Package the Lambda code
-cd lambda
-zip function.zip index.py
-
-# Update the function
-aws lambda update-function-code \
-  --function-name ai-chatbot-handler \
-  --zip-file fileb://function.zip
-```
-
-## Deploying the Chat UI
-
-The stack creates an S3 bucket and CloudFront distribution for hosting the chat frontend. After deploying the CloudFormation stack:
-
-```bash
-# 1. Get your stack outputs
-aws cloudformation describe-stacks --stack-name ai-chatbot --query 'Stacks[0].Outputs' --output table
-
-# 2. Update the API endpoint in chat.js
-# Open frontend/chat.js and replace API_ENDPOINT with the ApiEndpoint output value
-
-# 3. Upload frontend files to S3
-aws s3 sync frontend/ s3://YOUR_CHAT_UI_BUCKET_NAME/
-
-# 4. Visit your chat UI
-# Open the ChatUIURL from the stack outputs (CloudFront URL)
-```
-
-The chat UI is a simple, clean web interface where users can:
-- Send messages and receive AI responses in real-time
-- Maintain conversation context (session persists across messages)
-- Start new conversations
-
-No frameworks, no build step — just HTML, CSS, and vanilla JavaScript.
 
 ## Cleanup
 
@@ -221,21 +211,22 @@ To delete all resources:
 aws cloudformation delete-stack --stack-name ai-chatbot
 ```
 
-This removes the API Gateway, Lambda function, DynamoDB table, and IAM role.
+This removes everything: API Gateway, Lambda functions, DynamoDB table, S3 bucket (contents auto-cleaned), CloudFront distribution, and IAM roles.
 
 ## File Structure
 
 ```
 projects/ai-chatbot/
-├── template.yaml        # CloudFormation stack (all AWS resources)
-├── architecture.svg     # Architecture diagram
+├── template.yaml        # CloudFormation stack (all resources + inline code)
 ├── lambda/
-│   └── index.py         # Lambda function source code
+│   └── index.py         # Lambda function source (reference/readable version)
 ├── frontend/
-│   ├── index.html       # Chat UI web page
-│   └── chat.js          # Frontend JavaScript (API calls, state)
+│   ├── index.html       # Chat UI (reference/readable version)
+│   └── chat.js          # Frontend JS (reference/readable version)
 └── README.md            # This file
 ```
+
+> **Note:** The `lambda/` and `frontend/` directories contain readable reference versions of the code. The actual deployed code lives inline in `template.yaml` so that the stack is fully self-contained — one file deploys everything.
 
 ## License
 
