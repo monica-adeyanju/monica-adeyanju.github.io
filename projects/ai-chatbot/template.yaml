@@ -312,7 +312,7 @@ Outputs:
     Value: !Sub 'https://${ChatbotApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
   
   ChatEndpoint:
-    Description: POST this endpoint with {"message": "your question", "sessionId": "optional-id"}
+    Description: 'POST this endpoint with {"message": "your question", "sessionId": "optional-id"}'
     Value: !Sub 'https://${ChatbotApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/chat'
   
   HistoryEndpoint:
