@@ -72,9 +72,9 @@ User sends message → API Gateway → Lambda → Bedrock (Claude) → Response 
 
 Click the button below to launch the stack in your AWS account:
 
-[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home#/stacks/new?stackName=ai-chatbot&templateURL=https://YOUR_BUCKET.s3.amazonaws.com/template.yaml)
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home#/stacks/new?stackName=ai-chatbot&templateURL=https://raw.githubusercontent.com/monica-adeyanju/monica-adeyanju.github.io/main/projects/ai-chatbot/template.yaml)
 
-> **Note:** To use the one-click button, first upload `template.yaml` to a public S3 bucket and update the URL above. Alternatively, use the CLI method below.
+> **Note:** You must have [Bedrock model access enabled](#enable-bedrock-model-access) for Claude before deploying.
 
 ### Deploy via AWS CLI
 
