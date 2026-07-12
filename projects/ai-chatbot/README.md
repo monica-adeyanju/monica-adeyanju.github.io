@@ -36,8 +36,6 @@ User sends message → API Gateway → Lambda → Bedrock (Claude) → Response 
 
 ## Architecture Diagram
 
-![Architecture](architecture.svg)
-
 ```
 ┌──────────┐     ┌─────────────────┐     ┌────────────┐     ┌─────────────────┐
 │  Client  │────▶│  API Gateway    │────▶│   Lambda   │────▶│  Amazon Bedrock  │
