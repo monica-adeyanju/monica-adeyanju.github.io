@@ -81,8 +81,6 @@ Click the button below to launch the stack in your AWS account:
 
 [![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home#/stacks/new?stackName=ai-chatbot&templateURL=https://monica-adeyanju-cfn-templates.s3.amazonaws.com/template.yaml)
 
-> **Note:** You must have [Bedrock model access enabled](#enable-bedrock-model-access) for Claude before deploying.
-
 ### Deploy via AWS CLI
 
 ```bash
@@ -136,16 +134,8 @@ The frontend is deployed automatically with the correct API endpoint injected �
 
 ## Prerequisites
 
-- An AWS account with [Bedrock model access enabled](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) for Claude
+- An AWS account (Bedrock models are automatically enabled — no manual model access step required)
 - AWS CLI configured (for CLI deployment only)
-
-### Enable Bedrock Model Access
-
-1. Go to the [Amazon Bedrock Console](https://console.aws.amazon.com/bedrock)
-2. Navigate to **Model access** in the left sidebar
-3. Click **Manage model access**
-4. Enable access for **Anthropic → Claude** models
-5. Wait for access status to show "Access granted"
 
 ## Using the Chatbot
 
@@ -223,7 +213,7 @@ For light usage (~100 conversations/day):
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| "AI unavailable" error in chat | Bedrock model access not enabled | Enable Claude 3.5 Haiku in [Bedrock Model Access](https://console.aws.amazon.com/bedrock/home#/modelaccess) |
+| "AI unavailable" error in chat | Bedrock model not accessible or wrong model ID | Check Lambda logs in CloudWatch for the specific error. Ensure you're in us-east-1 region |
 | 403 error on ChatUI URL | CloudFront still provisioning | Wait 5–15 minutes after stack creation |
 | "ResourceNotFoundException" in Lambda logs | Model ID marked as legacy/end-of-life | Update stack with `us.anthropic.claude-haiku-4-5-20251001-v1:0` (inference profile ID with `us.` prefix) |
 | Stack fails to create | Missing IAM acknowledgment | Check "I acknowledge that this template creates IAM resources" during deploy |
