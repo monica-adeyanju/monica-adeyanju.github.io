@@ -7,11 +7,10 @@ Description: >
 Parameters:
   BedrockModelId:
     Type: String
-    Default: us.anthropic.claude-3-5-haiku-20241022-v1:0
+    Default: us.anthropic.claude-haiku-4-5-20251001-v1:0
     Description: The Bedrock inference profile ID to use for chat completions
     AllowedValues:
-      - us.anthropic.claude-3-5-haiku-20241022-v1:0
-      - us.anthropic.claude-3-5-sonnet-20241022-v2:0
+      - us.anthropic.claude-haiku-4-5-20251001-v1:0
       - us.anthropic.claude-sonnet-4-20250514-v1:0
 
   ConversationTTLDays:

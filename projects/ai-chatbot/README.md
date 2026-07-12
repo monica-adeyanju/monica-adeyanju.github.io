@@ -96,7 +96,7 @@ aws cloudformation deploy \
   --stack-name ai-chatbot \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
-    BedrockModelId=us.anthropic.claude-3-5-haiku-20241022-v1:0 \
+    BedrockModelId=us.anthropic.claude-haiku-4-5-20251001-v1:0 \
     ConversationTTLDays=7
 
 # Get your outputs (including the chat UI URL)
@@ -225,7 +225,7 @@ For light usage (~100 conversations/day):
 |---------|-------|-----|
 | "AI unavailable" error in chat | Bedrock model access not enabled | Enable Claude 3.5 Haiku in [Bedrock Model Access](https://console.aws.amazon.com/bedrock/home#/modelaccess) |
 | 403 error on ChatUI URL | CloudFront still provisioning | Wait 5–15 minutes after stack creation |
-| "ResourceNotFoundException" in Lambda logs | Model ID marked as legacy | Update stack with a current model ID (e.g., `anthropic.claude-3-5-haiku-20241022-v1:0`) |
+| "ResourceNotFoundException" in Lambda logs | Model ID marked as legacy/end-of-life | Update stack with `us.anthropic.claude-haiku-4-5-20251001-v1:0` (inference profile ID with `us.` prefix) |
 | Stack fails to create | Missing IAM acknowledgment | Check "I acknowledge that this template creates IAM resources" during deploy |
 | CORS error in browser console | API Gateway misconfigured | Ensure stack deployed fully (check all resources are CREATE_COMPLETE) |
 
