@@ -1,8 +1,38 @@
 # Serverless AI Chatbot
 
-A fully serverless AI chatbot powered by **Amazon Bedrock (Claude)** with conversation history stored in **DynamoDB**. Deploy the entire stack with one click using AWS CloudFormation.
+A fully serverless REST API that lets anyone chat with an AI (Claude via Amazon Bedrock). It remembers conversations using DynamoDB. The whole thing deploys as a single CloudFormation stack — no servers to manage, no Docker containers, nothing to SSH into.
 
-## Architecture
+## How It Works
+
+```
+User sends message → API Gateway → Lambda → Bedrock (Claude) → Response back
+                                      ↕
+                                   DynamoDB (saves conversation history)
+```
+
+**The flow:**
+
+1. A user sends a POST request to `/chat` with a message (e.g., "What is serverless?")
+2. **API Gateway** receives the HTTPS request and routes it to Lambda
+3. **Lambda** (Python function) does the work:
+   - Loads previous messages from DynamoDB for that session (so Claude has context)
+   - Sends the full conversation to **Bedrock** (Amazon's managed AI service running Claude)
+   - Gets the AI response back
+   - Stores both the user message and AI reply in **DynamoDB** with a TTL (auto-deletes after 7 days)
+   - Returns the response to the user
+4. User gets back the AI answer + a session ID to continue the conversation
+
+## AWS Services Used
+
+| Service | Role |
+|---------|------|
+| **API Gateway** | The front door — accepts HTTPS requests, handles CORS |
+| **Lambda** | The brain — runs the Python code, no server to maintain |
+| **Bedrock** | The AI — hosts Claude, you pay per token, no GPU management |
+| **DynamoDB** | The memory — stores chat history per session, scales infinitely |
+| **CloudFormation** | The deployer — defines all resources as code, one command to create/destroy |
+
+## Architecture Diagram
 
 ```
 ┌──────────┐     ┌─────────────────┐     ┌────────────┐     ┌─────────────────┐
