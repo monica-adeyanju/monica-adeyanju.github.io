@@ -90,7 +90,7 @@ def handle_chat(event):
     # Store user message
     store_message(session_id, now, "user", message, ttl)
 
-    # Store assistant response (timestamp + 1ms to maintain order)
+    # Store assistant response (timestamp + 1 to maintain sort order)
     store_message(session_id, now + 1, "assistant", ai_response, ttl)
 
     return response(200, {

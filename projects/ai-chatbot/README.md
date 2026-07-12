@@ -30,21 +30,31 @@ User sends message → API Gateway → Lambda → Bedrock (Claude) → Response 
 | **Lambda** | The brain — runs the Python code, no server to maintain |
 | **Bedrock** | The AI — hosts Claude, you pay per token, no GPU management |
 | **DynamoDB** | The memory — stores chat history per session, scales infinitely |
+| **S3** | The host — stores the chat UI static files (HTML, CSS, JS) |
+| **CloudFront** | The CDN — serves the UI globally with HTTPS and caching |
 | **CloudFormation** | The deployer — defines all resources as code, one command to create/destroy |
 
 ## Architecture Diagram
+
+![Architecture](architecture.svg)
 
 ```
 ┌──────────┐     ┌─────────────────┐     ┌────────────┐     ┌─────────────────┐
 │  Client  │────▶│  API Gateway    │────▶│   Lambda   │────▶│  Amazon Bedrock  │
 │          │◀────│  (REST API)     │◀────│  (Python)  │◀────│  (Claude)        │
 └──────────┘     └─────────────────┘     └─────┬──────┘     └─────────────────┘
-                                                │
-                                                ▼
-                                         ┌─────────────┐
-                                         │  DynamoDB   │
-                                         │ (History)   │
-                                         └─────────────┘
+      │                                         │
+      │                                         ▼
+      │                                  ┌─────────────┐
+      │                                  │  DynamoDB   │
+      │                                  │ (History)   │
+      │                                  └─────────────┘
+      │
+      ▼
+┌─────────────────┐     ┌─────────────┐
+│  CloudFront     │────▶│  S3 Bucket  │
+│  (CDN)          │     │  (Chat UI)  │
+└─────────────────┘     └─────────────┘
 ```
 
 ## Features
@@ -180,6 +190,31 @@ aws lambda update-function-code \
   --zip-file fileb://function.zip
 ```
 
+## Deploying the Chat UI
+
+The stack creates an S3 bucket and CloudFront distribution for hosting the chat frontend. After deploying the CloudFormation stack:
+
+```bash
+# 1. Get your stack outputs
+aws cloudformation describe-stacks --stack-name ai-chatbot --query 'Stacks[0].Outputs' --output table
+
+# 2. Update the API endpoint in chat.js
+# Open frontend/chat.js and replace API_ENDPOINT with the ApiEndpoint output value
+
+# 3. Upload frontend files to S3
+aws s3 sync frontend/ s3://YOUR_CHAT_UI_BUCKET_NAME/
+
+# 4. Visit your chat UI
+# Open the ChatUIURL from the stack outputs (CloudFront URL)
+```
+
+The chat UI is a simple, clean web interface where users can:
+- Send messages and receive AI responses in real-time
+- Maintain conversation context (session persists across messages)
+- Start new conversations
+
+No frameworks, no build step — just HTML, CSS, and vanilla JavaScript.
+
 ## Cleanup
 
 To delete all resources:
@@ -195,8 +230,12 @@ This removes the API Gateway, Lambda function, DynamoDB table, and IAM role.
 ```
 projects/ai-chatbot/
 ├── template.yaml        # CloudFormation stack (all AWS resources)
+├── architecture.svg     # Architecture diagram
 ├── lambda/
 │   └── index.py         # Lambda function source code
+├── frontend/
+│   ├── index.html       # Chat UI web page
+│   └── chat.js          # Frontend JavaScript (API calls, state)
 └── README.md            # This file
 ```
 

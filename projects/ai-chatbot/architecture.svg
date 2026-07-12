@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="Inter, Arial, sans-serif">
+  <!-- Background -->
+  <rect width="900" height="500" fill="#faf6f1" rx="12"/>
+  
+  <!-- Title -->
+  <text x="450" y="40" text-anchor="middle" font-size="18" font-weight="700" fill="#2c1810">Serverless AI Chatbot — Architecture</text>
+  
+  <!-- User / Browser -->
+  <rect x="30" y="180" width="140" height="80" rx="10" fill="#fff" stroke="#c4aa8e" stroke-width="2"/>
+  <text x="100" y="215" text-anchor="middle" font-size="12" font-weight="600" fill="#2c1810">User Browser</text>
+  <text x="100" y="235" text-anchor="middle" font-size="10" fill="#5c4033">Chat UI</text>
+  <text x="100" y="250" text-anchor="middle" font-size="10" fill="#5c4033">(S3 + CloudFront)</text>
+  
+  <!-- CloudFront -->
+  <rect x="30" y="310" width="140" height="60" rx="10" fill="#f0ebe4" stroke="#c4aa8e" stroke-width="2"/>
+  <text x="100" y="338" text-anchor="middle" font-size="11" font-weight="600" fill="#8b4513">CloudFront</text>
+  <text x="100" y="355" text-anchor="middle" font-size="9" fill="#5c4033">CDN Distribution</text>
+  
+  <!-- Arrow: User to CloudFront -->
+  <line x1="100" y1="260" x2="100" y2="308" stroke="#8b4513" stroke-width="2" marker-end="url(#arrow)"/>
+  
+  <!-- S3 Bucket -->
+  <rect x="30" y="410" width="140" height="60" rx="10" fill="#f0ebe4" stroke="#c4aa8e" stroke-width="2"/>
+  <text x="100" y="438" text-anchor="middle" font-size="11" font-weight="600" fill="#8b4513">S3 Bucket</text>
+  <text x="100" y="455" text-anchor="middle" font-size="9" fill="#5c4033">Static Website Files</text>
+  
+  <!-- Arrow: CloudFront to S3 -->
+  <line x1="100" y1="370" x2="100" y2="408" stroke="#8b4513" stroke-width="2" marker-end="url(#arrow)"/>
+  
+  <!-- API Gateway -->
+  <rect x="260" y="180" width="150" height="80" rx="10" fill="#fff" stroke="#c4aa8e" stroke-width="2"/>
+  <text x="335" y="215" text-anchor="middle" font-size="12" font-weight="600" fill="#2c1810">API Gateway</text>
+  <text x="335" y="235" text-anchor="middle" font-size="10" fill="#5c4033">REST API</text>
+  <text x="335" y="250" text-anchor="middle" font-size="10" fill="#5c4033">POST /chat · GET /history</text>
+  
+  <!-- Arrow: User to API Gateway -->
+  <line x1="170" y1="220" x2="258" y2="220" stroke="#8b4513" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="214" y="212" text-anchor="middle" font-size="9" fill="#8b4513">HTTPS</text>
+  
+  <!-- Lambda -->
+  <rect x="500" y="180" width="150" height="80" rx="10" fill="#fff" stroke="#c4aa8e" stroke-width="2"/>
+  <text x="575" y="215" text-anchor="middle" font-size="12" font-weight="600" fill="#2c1810">Lambda</text>
+  <text x="575" y="235" text-anchor="middle" font-size="10" fill="#5c4033">Python 3.12</text>
+  <text x="575" y="250" text-anchor="middle" font-size="10" fill="#5c4033">Chat Handler</text>
+  
+  <!-- Arrow: API GW to Lambda -->
+  <line x1="410" y1="220" x2="498" y2="220" stroke="#8b4513" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="454" y="212" text-anchor="middle" font-size="9" fill="#8b4513">Invoke</text>
+  
+  <!-- Bedrock -->
+  <rect x="730" y="180" width="140" height="80" rx="10" fill="#8b4513" stroke="#5c4033" stroke-width="2"/>
+  <text x="800" y="215" text-anchor="middle" font-size="12" font-weight="700" fill="#faf6f1">Amazon Bedrock</text>
+  <text x="800" y="235" text-anchor="middle" font-size="10" fill="#f0ebe4">Claude AI</text>
+  <text x="800" y="250" text-anchor="middle" font-size="10" fill="#f0ebe4">Foundation Model</text>
+  
+  <!-- Arrow: Lambda to Bedrock -->
+  <line x1="650" y1="220" x2="728" y2="220" stroke="#8b4513" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="689" y="212" text-anchor="middle" font-size="9" fill="#8b4513">InvokeModel</text>
+  
+  <!-- DynamoDB -->
+  <rect x="500" y="340" width="150" height="80" rx="10" fill="#f0ebe4" stroke="#c4aa8e" stroke-width="2"/>
+  <text x="575" y="372" text-anchor="middle" font-size="12" font-weight="600" fill="#2c1810">DynamoDB</text>
+  <text x="575" y="392" text-anchor="middle" font-size="10" fill="#5c4033">Conversation History</text>
+  <text x="575" y="407" text-anchor="middle" font-size="9" fill="#8b7355">TTL: Auto-expire after 7 days</text>
+  
+  <!-- Arrow: Lambda to DynamoDB -->
+  <line x1="575" y1="260" x2="575" y2="338" stroke="#8b4513" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="600" y="300" text-anchor="start" font-size="9" fill="#8b4513">Read/Write</text>
+  
+  <!-- CloudFormation badge -->
+  <rect x="640" y="430" width="230" height="50" rx="8" fill="#fff" stroke="#c4aa8e" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="755" y="452" text-anchor="middle" font-size="10" font-weight="600" fill="#8b4513">All resources defined in</text>
+  <text x="755" y="468" text-anchor="middle" font-size="11" font-weight="700" fill="#2c1810">CloudFormation (template.yaml)</text>
+  
+  <!-- Arrow marker definition -->
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#8b4513"/>
+    </marker>
+  </defs>
+</svg>

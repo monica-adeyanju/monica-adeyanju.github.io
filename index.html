@@ -115,18 +115,21 @@
                     </div>
                     <p class="project-description">
                         A fully serverless AI chatbot powered by Amazon Bedrock (Claude),
-                        with conversation history persistence via DynamoDB. Deployable as a
-                        single CloudFormation stack — one click to launch your own AI assistant API.
+                        with a clean chat UI hosted on CloudFront and conversation history
+                        persistence via DynamoDB. Deployable as a single CloudFormation stack —
+                        one click to launch your own AI assistant with a web interface.
                     </p>
                     <div class="project-architecture">
                         <span class="arch-label">Architecture:</span>
-                        <span class="arch-flow">API Gateway → Lambda → Bedrock + DynamoDB</span>
+                        <span class="arch-flow">CloudFront + S3 → API Gateway → Lambda → Bedrock + DynamoDB</span>
                     </div>
                     <ul class="project-tech">
                         <li>AWS Bedrock</li>
                         <li>Lambda</li>
                         <li>API Gateway</li>
                         <li>DynamoDB</li>
+                        <li>CloudFront</li>
+                        <li>S3</li>
                         <li>CloudFormation</li>
                         <li>Python</li>
                     </ul>

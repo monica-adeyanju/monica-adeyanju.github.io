@@ -239,6 +239,73 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ChatbotApi}/*'
 
+  # ─── S3 Bucket for Chat UI ────────────────────────────────────────────
+  ChatUIBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-chat-ui-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: ai-chatbot
+
+  ChatUIBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ChatUIBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontAccess
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${ChatUIBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${ChatUIDistribution}'
+
+  # ─── CloudFront Distribution ───────────────────────────────────────────
+  ChatUIOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ChatUIDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Comment: !Sub '${AWS::StackName} Chat UI'
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt ChatUIBucket.RegionalDomainName
+            OriginAccessControlId: !Ref ChatUIOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          ForwardedValues:
+            QueryString: false
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+      Tags:
+        - Key: Project
+          Value: ai-chatbot
+
 Outputs:
   ApiEndpoint:
     Description: API Gateway endpoint URL for the chatbot
@@ -251,6 +318,14 @@ Outputs:
   HistoryEndpoint:
     Description: GET conversation history with ?sessionId=your-session-id
     Value: !Sub 'https://${ChatbotApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/history'
+  
+  ChatUIURL:
+    Description: CloudFront URL for the chat web interface
+    Value: !Sub 'https://${ChatUIDistribution.DomainName}'
+  
+  ChatUIBucketName:
+    Description: S3 bucket to upload frontend files to
+    Value: !Ref ChatUIBucket
   
   ConversationTableName:
     Description: DynamoDB table name for conversation storage
