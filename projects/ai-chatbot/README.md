@@ -147,9 +147,25 @@ The frontend is deployed automatically with the correct API endpoint injected �
 4. Enable access for **Anthropic → Claude** models
 5. Wait for access status to show "Access granted"
 
-## API Usage (Programmatic)
+## Using the Chatbot
 
-You can also interact with the chatbot via API directly (for integrations, testing, etc.):
+### Via the Web Interface (Recommended)
+
+Once the stack is deployed:
+
+1. Go to the **Outputs** tab of your CloudFormation stack
+2. Copy the **ChatUIURL** (e.g., `https://d1234abcdef.cloudfront.net`)
+3. Open it in your browser
+4. Type a message in the input box and hit **Send**
+5. The AI (Claude) will respond in the chat window
+6. Keep chatting — the bot remembers your conversation within the session
+7. Close the tab and come back later — your history is stored for 7 days (configurable)
+
+> **Note:** CloudFront can take 5–15 minutes to fully activate after initial deployment. If you see a 403 error, wait a few minutes and refresh.
+
+### Via API (for Integrations and Testing)
+
+You can also interact with the chatbot programmatically using the REST API:
 
 ### Send a Message
 
@@ -202,6 +218,21 @@ For light usage (~100 conversations/day):
 | Bedrock (Claude Haiku) | ~$0.50–$2.00/month |
 
 **Total: Under $3/month** for a personal project.
+
+## Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| "AI unavailable" error in chat | Bedrock model access not enabled | Enable Claude 3.5 Haiku in [Bedrock Model Access](https://console.aws.amazon.com/bedrock/home#/modelaccess) |
+| 403 error on ChatUI URL | CloudFront still provisioning | Wait 5–15 minutes after stack creation |
+| "ResourceNotFoundException" in Lambda logs | Model ID marked as legacy | Update stack with a current model ID (e.g., `anthropic.claude-3-5-haiku-20241022-v1:0`) |
+| Stack fails to create | Missing IAM acknowledgment | Check "I acknowledge that this template creates IAM resources" during deploy |
+| CORS error in browser console | API Gateway misconfigured | Ensure stack deployed fully (check all resources are CREATE_COMPLETE) |
+
+To view Lambda error logs:
+1. Go to [CloudWatch Logs](https://console.aws.amazon.com/cloudwatch/home#logsV2:log-groups)
+2. Find `/aws/lambda/ai-chatbot-handler`
+3. Open the most recent log stream to see error details
 
 ## Cleanup
 
