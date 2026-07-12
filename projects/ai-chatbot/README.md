@@ -96,7 +96,7 @@ aws cloudformation deploy \
   --stack-name ai-chatbot \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
-    BedrockModelId=anthropic.claude-3-haiku-20240307-v1:0 \
+    BedrockModelId=anthropic.claude-3-5-haiku-20241022-v1:0 \
     ConversationTTLDays=7
 
 # Get your outputs (including the chat UI URL)
