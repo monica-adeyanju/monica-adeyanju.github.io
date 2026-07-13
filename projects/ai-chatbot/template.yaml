@@ -407,7 +407,7 @@ Resources:
               upu(uid,today,tok)
               emit("MessagesProcessed",1);emit("TokensUsed",tok);emit("ModelLatency",lat)
               if model==FM:emit("FallbackInvocations",1)
-              return R(200,{"response":ai,"sessionId":sid,"model":model,"tokensUsed":tok,"ragUsed":bool(rc)})
+              return R(200,{"response":ai,"sessionId":sid,"model":model,"tokensUsed":tok,"ragUsed":bool(rc),"ragAttempted":rag})
           def fallback(msgs):
               r=invoke(msgs,PM)
               if r:return r[0],PM,r[1]
@@ -431,16 +431,28 @@ Resources:
               except:return{"blocked":False}
           def getrag(uid):
               try:
-                  res=s3.list_objects_v2(Bucket=DB,Prefix=f"users/{uid}/",MaxKeys=5)
-                  if "Contents" not in res:return""
+                  prefix=f"users/{uid}/"
+                  print(f"RAG: listing {DB}/{prefix}")
+                  res=s3.list_objects_v2(Bucket=DB,Prefix=prefix,MaxKeys=5)
+                  if "Contents" not in res:
+                      print("RAG: no documents found");return""
                   parts=[]
                   for o in res["Contents"]:
-                      if o["Size"]>100000:continue
+                      if o["Size"]>100000 or o["Size"]==0:continue
+                      key=o["Key"]
+                      ext=key.rsplit(".",1)[-1].lower()if"."in key else""
+                      if ext in["pdf","docx"]:continue
                       try:
-                          d=s3.get_object(Bucket=DB,Key=o["Key"]);parts.append(d["Body"].read().decode("utf-8",errors="ignore")[:2000])
-                      except:continue
-                  return"\n\n".join(parts)[:4000]
-              except:return""
+                          d=s3.get_object(Bucket=DB,Key=key)
+                          content=d["Body"].read().decode("utf-8",errors="ignore")[:2000]
+                          if content.strip():parts.append(content)
+                      except Exception as ex:
+                          print(f"RAG read error {key}:{ex}");continue
+                  result="\n\n".join(parts)[:4000]
+                  print(f"RAG: retrieved {len(parts)} docs, {len(result)} chars")
+                  return result
+              except Exception as ex:
+                  print(f"RAG error:{ex}");return""
           def upload(e,uid):
               try:body=json.loads(e.get("body","{}"))
               except:return R(400,{"error":"Invalid JSON"})
