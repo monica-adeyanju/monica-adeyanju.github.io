@@ -319,16 +319,8 @@ Resources:
                   - cloudwatch:PutMetricData
                 Resource: '*'
 
-  # Lambda log group with retention policy
-  ChatbotLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub '/aws/lambda/${AppName}-handler'
-      RetentionInDays: 14
-
   ChatbotFunction:
     Type: AWS::Lambda::Function
-    DependsOn: ChatbotLogGroup
     Properties:
       FunctionName: !Sub '${AppName}-handler'
       Runtime: python3.12
