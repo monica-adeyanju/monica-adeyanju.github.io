@@ -61,52 +61,22 @@ Resources:
           RequireUppercase: true
           RequireLowercase: true
           RequireNumbers: true
-          RequireSymbols: false
+          RequireSymbols: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserAttributeUpdateSettings:
+        AttributesRequireVerificationBeforeUpdate:
+          - email
+      VerificationMessageTemplate:
+        DefaultEmailOption: CONFIRM_WITH_LINK
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
       Schema:
         - Name: email
           Required: true
           Mutable: true
-      LambdaConfig:
-        PreSignUp: !GetAtt AutoConfirmFunction.Arn
-
-  # Auto-confirm users on sign-up (no email verification required)
-  AutoConfirmFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Sub '${AppName}-auto-confirm'
-      Runtime: python3.12
-      Handler: index.handler
-      Timeout: 5
-      MemorySize: 128
-      Role: !GetAtt AutoConfirmRole.Arn
-      Code:
-        ZipFile: |
-          def handler(event, context):
-              event["response"]["autoConfirmUser"] = True
-              event["response"]["autoVerifyEmail"] = True
-              return event
-
-  AutoConfirmRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub '${AppName}-auto-confirm-role'
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-
-  AutoConfirmPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref AutoConfirmFunction
-      Action: lambda:InvokeFunction
-      Principal: cognito-idp.amazonaws.com
-      SourceArn: !GetAtt UserPool.Arn
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -119,6 +89,19 @@ Resources:
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
       PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub '${AppName}-${AWS::AccountId}'
+      UserPoolId: !Ref UserPool
 
   # ═══════════════════════════════════════════════════════════════════════
   # DATA LAYER - DynamoDB Tables
@@ -128,6 +111,10 @@ Resources:
     Properties:
       TableName: !Sub '${AppName}-conversations'
       BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - AttributeName: sessionId
           AttributeType: S
@@ -147,6 +134,10 @@ Resources:
     Properties:
       TableName: !Sub '${AppName}-usage'
       BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       AttributeDefinitions:
         - AttributeName: userId
           AttributeType: S
@@ -168,12 +159,29 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${AppName}-documents-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders: ['*']
             AllowedMethods: [PUT, GET]
             AllowedOrigins: ['*']
             MaxAge: 3600
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
       Tags:
         - Key: Project
           Value: !Ref AppName
@@ -311,8 +319,16 @@ Resources:
                   - cloudwatch:PutMetricData
                 Resource: '*'
 
+  # Lambda log group with retention policy
+  ChatbotLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AppName}-handler'
+      RetentionInDays: 14
+
   ChatbotFunction:
     Type: AWS::Lambda::Function
+    DependsOn: ChatbotLogGroup
     Properties:
       FunctionName: !Sub '${AppName}-handler'
       Runtime: python3.12
@@ -322,6 +338,7 @@ Resources:
       Role: !GetAtt ChatbotLambdaRole.Arn
       TracingConfig:
         Mode: Active
+      ReservedConcurrentExecutions: 50
       Environment:
         Variables:
           CONVERSATION_TABLE: !Ref ConversationTable
@@ -354,6 +371,13 @@ Resources:
       EndpointConfiguration:
         Types:
           - REGIONAL
+
+  # API Gateway access logging
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${AppName}-api'
+      RetentionInDays: 30
 
   CognitoAuthorizer:
     Type: AWS::ApiGateway::Authorizer
