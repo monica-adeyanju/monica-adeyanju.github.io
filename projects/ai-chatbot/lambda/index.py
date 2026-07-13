@@ -326,7 +326,7 @@ def handle_upload(event, user_id):
     key = f"users/{user_id}/{safe_name}"
 
     # Validate file extension
-    allowed_extensions = [".txt", ".md", ".pdf", ".csv", ".json"]
+    allowed_extensions = [".txt", ".md", ".pdf", ".csv", ".json", ".docx"]
     ext = os.path.splitext(safe_name)[1].lower()
     if ext not in allowed_extensions:
         return resp(400, {

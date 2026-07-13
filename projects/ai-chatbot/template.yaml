@@ -345,9 +345,143 @@ Resources:
           USER_POOL_ID: !Ref UserPool
       Code:
         ZipFile: |
-          import json
-          def handler(event, context):
-              return {"statusCode": 200, "body": json.dumps({"message": "Deploy full code via update"})}
+          import json,os,time,uuid,boto3
+          from botocore.exceptions import ClientError
+          from datetime import datetime,timezone
+          CT=os.environ["CONVERSATION_TABLE"]
+          UT=os.environ["USAGE_TABLE"]
+          PM=os.environ["PRIMARY_MODEL_ID"]
+          FM=os.environ["FALLBACK_MODEL_ID"]
+          TTL=int(os.environ.get("TTL_DAYS",7))
+          MB=int(os.environ.get("MAX_TOKEN_BUDGET",50000))
+          GID=os.environ["GUARDRAIL_ID"]
+          GV=os.environ.get("GUARDRAIL_VERSION","DRAFT")
+          DB=os.environ["DOCUMENT_BUCKET"]
+          SP="You are a helpful AI assistant. Be concise and accurate."
+          br=boto3.client("bedrock-runtime")
+          dy=boto3.resource("dynamodb")
+          s3=boto3.client("s3")
+          cw=boto3.client("cloudwatch")
+          ct=dy.Table(CT)
+          ut=dy.Table(UT)
+          def handler(e,ctx):
+              m=e.get("httpMethod","");p=e.get("path","");uid=xuid(e)
+              try:
+                  if p=="/chat" and m=="POST":return chat(e,uid)
+                  elif p=="/history" and m=="GET":return hist(e,uid)
+                  elif p=="/upload" and m=="POST":return upload(e,uid)
+                  elif p=="/usage" and m=="GET":return usage(e,uid)
+                  else:return R(404,{"error":"Not found"})
+              except Exception as ex:
+                  print(f"Error:{ex}");return R(500,{"error":"Internal server error"})
+          def xuid(e):
+              try:return e["requestContext"]["authorizer"]["claims"].get("sub","anon")
+              except:return "anon"
+          def chat(e,uid):
+              try:body=json.loads(e.get("body","{}"))
+              except:return R(400,{"error":"Invalid JSON"})
+              msg=body.get("message","").strip()
+              if not msg:return R(400,{"error":"Message is required"})
+              if len(msg)>4000:return R(400,{"error":"Message too long"})
+              sid=body.get("sessionId") or str(uuid.uuid4())
+              rag=body.get("useRAG",False)
+              today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+              u=getu(uid,today)
+              if u>=MB:return R(429,{"error":"Daily token budget exceeded","usage":u,"limit":MB})
+              gi=guard(msg,"INPUT")
+              if gi.get("blocked"):return R(400,{"error":"Message blocked by safety policy"})
+              rc=""
+              if rag:rc=getrag(uid)
+              h=geth(sid)
+              msgs=[{"role":i["role"],"content":i["content"]}for i in h]
+              uc=f"Context:\n{rc}\n\nQuestion:{msg}" if rc else msg
+              msgs.append({"role":"user","content":uc})
+              t0=time.time()
+              ai,model,tok=fallback(msgs)
+              lat=(time.time()-t0)*1000
+              if ai is None:return R(503,{"error":"AI models unavailable"})
+              go=guard(ai,"OUTPUT")
+              if go.get("blocked"):ai="Response blocked by safety policy."
+              now=int(time.time());ttl=now+(TTL*86400)
+              store(sid,now,"user",msg,ttl,uid);store(sid,now+1,"assistant",ai,ttl,uid)
+              upu(uid,today,tok)
+              emit("MessagesProcessed",1);emit("TokensUsed",tok);emit("ModelLatency",lat)
+              if model==FM:emit("FallbackInvocations",1)
+              return R(200,{"response":ai,"sessionId":sid,"model":model,"tokensUsed":tok,"ragUsed":bool(rc)})
+          def fallback(msgs):
+              r=invoke(msgs,PM)
+              if r:return r[0],PM,r[1]
+              r=invoke(msgs,FM)
+              if r:return r[0],FM,r[1]
+              return None,None,0
+          def invoke(msgs,mid):
+              try:
+                  rb={"anthropic_version":"bedrock-2023-05-31","max_tokens":1024,"system":SP,"messages":msgs[-20:]}
+                  res=br.invoke_model(modelId=mid,contentType="application/json",accept="application/json",body=json.dumps(rb))
+                  d=json.loads(res["body"].read());t=d["content"][0]["text"]
+                  u=d.get("usage",{});tok=u.get("input_tokens",0)+u.get("output_tokens",0)
+                  return(t,tok)
+              except Exception as ex:print(f"Bedrock({mid}):{ex}");return None
+          def guard(content,src):
+              try:
+                  r=br.apply_guardrail(guardrailIdentifier=GID,guardrailVersion=GV,source=src,content=[{"text":{"text":content}}])
+                  if r.get("action")=="GUARDRAIL_INTERVENED":
+                      o=r.get("outputs",[]);return{"blocked":True,"reason":o[0]["text"]if o else"Blocked"}
+                  return{"blocked":False}
+              except:return{"blocked":False}
+          def getrag(uid):
+              try:
+                  res=s3.list_objects_v2(Bucket=DB,Prefix=f"users/{uid}/",MaxKeys=5)
+                  if "Contents" not in res:return""
+                  parts=[]
+                  for o in res["Contents"]:
+                      if o["Size"]>100000:continue
+                      try:
+                          d=s3.get_object(Bucket=DB,Key=o["Key"]);parts.append(d["Body"].read().decode("utf-8",errors="ignore")[:2000])
+                      except:continue
+                  return"\n\n".join(parts)[:4000]
+              except:return""
+          def upload(e,uid):
+              try:body=json.loads(e.get("body","{}"))
+              except:return R(400,{"error":"Invalid JSON"})
+              fn=body.get("filename","").strip()
+              if not fn:return R(400,{"error":"filename required"})
+              safe="".join(c for c in fn if c.isalnum() or c in".-_")
+              ext=os.path.splitext(safe)[1].lower()
+              allowed=[".txt",".md",".pdf",".csv",".json",".docx"]
+              if ext not in allowed:return R(400,{"error":f"Allowed: {', '.join(allowed)}"})
+              key=f"users/{uid}/{safe}"
+              try:
+                  url=s3.generate_presigned_url("put_object",Params={"Bucket":DB,"Key":key},ExpiresIn=300)
+                  return R(200,{"uploadUrl":url,"key":key})
+              except Exception as ex:return R(500,{"error":"Upload URL failed"})
+          def hist(e,uid):
+              p=e.get("queryStringParameters")or{};sid=p.get("sessionId","").strip()
+              if not sid:return R(400,{"error":"sessionId required"})
+              h=geth(sid,50);return R(200,{"sessionId":sid,"messages":h,"count":len(h)})
+          def usage(e,uid):
+              today=datetime.now(timezone.utc).strftime("%Y-%m-%d");u=getu(uid,today)
+              return R(200,{"userId":uid,"date":today,"tokensUsed":u,"tokenBudget":MB,"remaining":max(0,MB-u),"percentUsed":round((u/MB)*100,1)})
+          def store(sid,ts,role,content,ttl,uid):
+              try:ct.put_item(Item={"sessionId":sid,"timestamp":ts,"role":role,"content":content,"userId":uid,"ttl":ttl})
+              except:pass
+          def geth(sid,limit=20):
+              try:
+                  r=ct.query(KeyConditionExpression="sessionId = :s",ExpressionAttributeValues={":s":sid},ScanIndexForward=True,Limit=limit)
+                  return[{"role":i["role"],"content":i["content"],"timestamp":int(i["timestamp"])}for i in r.get("Items",[])]
+              except:return[]
+          def getu(uid,date):
+              try:
+                  r=ut.get_item(Key={"userId":uid,"date":date});i=r.get("Item")
+                  return int(i["tokensUsed"])if i else 0
+              except:return 0
+          def upu(uid,date,tok):
+              try:ut.update_item(Key={"userId":uid,"date":date},UpdateExpression="SET tokensUsed=if_not_exists(tokensUsed,:z)+:t,#ttl=:ttl",ExpressionAttributeNames={"#ttl":"ttl"},ExpressionAttributeValues={":t":tok,":z":0,":ttl":int(time.time())+2592000})
+              except:pass
+          def emit(n,v):
+              try:cw.put_metric_data(Namespace="ai-chatbot",MetricData=[{"MetricName":n,"Value":v,"Unit":"Milliseconds"if n=="ModelLatency"else"Count","Dimensions":[{"Name":"Service","Value":"Chatbot"}]}])
+              except:pass
+          def R(c,b):return{"statusCode":c,"headers":{"Content-Type":"application/json","Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"Content-Type,Authorization","Access-Control-Allow-Methods":"POST,GET,OPTIONS"},"body":json.dumps(b)}
       Tags:
         - Key: Project
           Value: !Ref AppName
@@ -749,7 +883,7 @@ Resources:
           def send(event,context,status,data):
               body=json.dumps({"Status":status,"Reason":f"Log:{context.log_group_name}","PhysicalResourceId":context.log_stream_name,"StackId":event["StackId"],"RequestId":event["RequestId"],"LogicalResourceId":event["LogicalResourceId"],"Data":data})
               urllib.request.urlopen(urllib.request.Request(event["ResponseURL"],data=body.encode(),method="PUT",headers={"Content-Type":""}))
-          INDEX_HTML='''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>AI Chatbot</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#faf6f1;color:#2c1810;height:100vh;display:flex;flex-direction:column}.header{background:#2c1810;color:#faf6f1;padding:.75rem 1.5rem;display:flex;align-items:center;justify-content:space-between}.header h1{font-size:1rem}.header-right{display:flex;align-items:center;gap:1rem}.header .user-info{font-size:.75rem;color:#c4aa8e}.header .btn-sm{font-size:.7rem;padding:.3rem .6rem;background:#8b4513;color:#faf6f1;border:none;border-radius:4px;cursor:pointer}.auth-screen{flex:1;display:flex;align-items:center;justify-content:center}.auth-box{background:#fff;border:1px solid #e0d5c8;border-radius:12px;padding:2.5rem;width:100%;max-width:380px}.auth-box h2{font-size:1.2rem;margin-bottom:.5rem}.auth-box p{font-size:.85rem;color:#5c4033;margin-bottom:1.5rem}.auth-box input{width:100%;padding:.7rem 1rem;border:1px solid #e0d5c8;border-radius:6px;font-size:.9rem;margin-bottom:.75rem;outline:none}.auth-box .btn{width:100%;padding:.75rem;background:#8b4513;color:#faf6f1;border:none;border-radius:6px;font-size:.9rem;cursor:pointer;margin-top:.5rem}.auth-box .switch{text-align:center;margin-top:1rem;font-size:.8rem;color:#5c4033}.auth-box .switch a{color:#8b4513;cursor:pointer;text-decoration:underline}.auth-error{color:#991b1b;font-size:.8rem;margin-bottom:.75rem;display:none}.app{flex:1;display:none;flex-direction:column}.toolbar{padding:.5rem 1.5rem;background:#f0ebe4;border-bottom:1px solid #e0d5c8;display:flex;align-items:center;gap:1rem;font-size:.8rem;flex-wrap:wrap}.toolbar label{color:#5c4033}.usage-bar{margin-left:auto;display:flex;align-items:center;gap:.5rem}.usage-bar .bar{width:80px;height:6px;background:#e0d5c8;border-radius:3px;overflow:hidden}.usage-bar .bar-fill{height:100%;background:#8b4513;border-radius:3px}.usage-bar span{font-size:.7rem;color:#8b7355}.chat-container{flex:1;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:.75rem}.message{max-width:75%;padding:.75rem 1rem;border-radius:12px;font-size:.88rem;line-height:1.6;word-wrap:break-word}.message.user{align-self:flex-end;background:#8b4513;color:#faf6f1;border-bottom-right-radius:4px}.message.assistant{align-self:flex-start;background:#fff;border:1px solid #e0d5c8;border-bottom-left-radius:4px}.message.error{align-self:center;background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;font-size:.8rem}.message .meta{font-size:.65rem;color:#8b7355;margin-top:.4rem}.typing{align-self:flex-start;padding:.75rem 1rem;background:#fff;border:1px solid #e0d5c8;border-radius:12px;display:none}.typing span{display:inline-block;width:7px;height:7px;background:#c4aa8e;border-radius:50%;margin:0 2px;animation:b 1.4s infinite ease-in-out}.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}@keyframes b{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}.input-area{padding:.75rem 1.5rem;background:#fff;border-top:1px solid #e0d5c8;display:flex;gap:.5rem}.input-area input{flex:1;padding:.7rem 1rem;border:1px solid #e0d5c8;border-radius:8px;font-size:.88rem;outline:none}.input-area input:focus{border-color:#8b4513}.input-area button{padding:.7rem 1.2rem;background:#8b4513;color:#faf6f1;border:none;border-radius:8px;font-size:.88rem;font-weight:500;cursor:pointer}.input-area button:hover{background:#a0522d}.input-area button:disabled{background:#c4aa8e;cursor:not-allowed}</style></head><body><div class="auth-screen" id="authScreen"><div class="auth-box"><h2 id="authTitle">Sign In</h2><p id="authSubtitle">Sign in to start chatting with AI</p><div class="auth-error" id="authError"></div><input type="email" id="authEmail" placeholder="Email address"><input type="password" id="authPassword" placeholder="Password"><input type="password" id="authConfirm" placeholder="Confirm password" style="display:none"><button class="btn" id="authBtn" onclick="handleAuth()">Sign In</button><div class="switch" id="authSwitch">No account? <a onclick="toggleAuthMode()">Sign Up</a></div></div></div><div class="app" id="app"><div class="header"><h1>AI Chatbot</h1><div class="header-right"><span class="user-info" id="userInfo"></span><button class="btn-sm" onclick="signOut()">Sign Out</button></div></div><div class="toolbar"><label><input type="checkbox" id="ragToggle"> Use RAG</label><button class="btn-sm" onclick="document.getElementById('fileInput').click()">Upload Doc</button><input type="file" id="fileInput" accept=".txt,.md,.csv,.json" style="display:none" onchange="uploadFile()"><div class="usage-bar"><div class="bar"><div class="bar-fill" id="usageBar" style="width:0%"></div></div><span id="usageText">0%</span></div></div><div class="chat-container" id="chat"></div><div class="typing" id="typing"><span></span><span></span><span></span></div><div class="input-area"><input type="text" id="msgInput" placeholder="Type your message..." autocomplete="off"><button id="sendBtn" onclick="sendMessage()">Send</button></div></div><script src="auth.js"></script><script src="chat.js"></script></body></html>'''
+          INDEX_HTML='''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>AI Chatbot</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#faf6f1;color:#2c1810;height:100vh;display:flex;flex-direction:column}.header{background:#2c1810;color:#faf6f1;padding:.75rem 1.5rem;display:flex;align-items:center;justify-content:space-between}.header h1{font-size:1rem}.header-right{display:flex;align-items:center;gap:1rem}.header .user-info{font-size:.75rem;color:#c4aa8e}.header .btn-sm{font-size:.7rem;padding:.3rem .6rem;background:#8b4513;color:#faf6f1;border:none;border-radius:4px;cursor:pointer}.auth-screen{flex:1;display:flex;align-items:center;justify-content:center}.auth-box{background:#fff;border:1px solid #e0d5c8;border-radius:12px;padding:2.5rem;width:100%;max-width:380px}.auth-box h2{font-size:1.2rem;margin-bottom:.5rem}.auth-box p{font-size:.85rem;color:#5c4033;margin-bottom:1.5rem}.auth-box input{width:100%;padding:.7rem 1rem;border:1px solid #e0d5c8;border-radius:6px;font-size:.9rem;margin-bottom:.75rem;outline:none}.auth-box .btn{width:100%;padding:.75rem;background:#8b4513;color:#faf6f1;border:none;border-radius:6px;font-size:.9rem;cursor:pointer;margin-top:.5rem}.auth-box .switch{text-align:center;margin-top:1rem;font-size:.8rem;color:#5c4033}.auth-box .switch a{color:#8b4513;cursor:pointer;text-decoration:underline}.auth-error{color:#991b1b;font-size:.8rem;margin-bottom:.75rem;display:none}.app{flex:1;display:none;flex-direction:column}.toolbar{padding:.5rem 1.5rem;background:#f0ebe4;border-bottom:1px solid #e0d5c8;display:flex;align-items:center;gap:1rem;font-size:.8rem;flex-wrap:wrap}.toolbar label{color:#5c4033}.usage-bar{margin-left:auto;display:flex;align-items:center;gap:.5rem}.usage-bar .bar{width:80px;height:6px;background:#e0d5c8;border-radius:3px;overflow:hidden}.usage-bar .bar-fill{height:100%;background:#8b4513;border-radius:3px}.usage-bar span{font-size:.7rem;color:#8b7355}.chat-container{flex:1;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:.75rem}.message{max-width:75%;padding:.75rem 1rem;border-radius:12px;font-size:.88rem;line-height:1.6;word-wrap:break-word}.message.user{align-self:flex-end;background:#8b4513;color:#faf6f1;border-bottom-right-radius:4px}.message.assistant{align-self:flex-start;background:#fff;border:1px solid #e0d5c8;border-bottom-left-radius:4px}.message.error{align-self:center;background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;font-size:.8rem}.message .meta{font-size:.65rem;color:#8b7355;margin-top:.4rem}.typing{align-self:flex-start;padding:.75rem 1rem;background:#fff;border:1px solid #e0d5c8;border-radius:12px;display:none}.typing span{display:inline-block;width:7px;height:7px;background:#c4aa8e;border-radius:50%;margin:0 2px;animation:b 1.4s infinite ease-in-out}.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}@keyframes b{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}.input-area{padding:.75rem 1.5rem;background:#fff;border-top:1px solid #e0d5c8;display:flex;gap:.5rem}.input-area input{flex:1;padding:.7rem 1rem;border:1px solid #e0d5c8;border-radius:8px;font-size:.88rem;outline:none}.input-area input:focus{border-color:#8b4513}.input-area button{padding:.7rem 1.2rem;background:#8b4513;color:#faf6f1;border:none;border-radius:8px;font-size:.88rem;font-weight:500;cursor:pointer}.input-area button:hover{background:#a0522d}.input-area button:disabled{background:#c4aa8e;cursor:not-allowed}</style></head><body><div class="auth-screen" id="authScreen"><div class="auth-box"><h2 id="authTitle">Sign In</h2><p id="authSubtitle">Sign in to start chatting with AI</p><div class="auth-error" id="authError"></div><input type="email" id="authEmail" placeholder="Email address"><input type="password" id="authPassword" placeholder="Password"><input type="password" id="authConfirm" placeholder="Confirm password" style="display:none"><button class="btn" id="authBtn" onclick="handleAuth()">Sign In</button><div class="switch" id="authSwitch">No account? <a onclick="toggleAuthMode()">Sign Up</a></div></div></div><div class="app" id="app"><div class="header"><h1>AI Chatbot</h1><div class="header-right"><span class="user-info" id="userInfo"></span><button class="btn-sm" onclick="signOut()">Sign Out</button></div></div><div class="toolbar"><label><input type="checkbox" id="ragToggle"> Use RAG</label><button class="btn-sm" onclick="document.getElementById('fileInput').click()">Upload Doc</button><input type="file" id="fileInput" accept=".txt,.md,.csv,.json,.pdf,.docx" style="display:none" onchange="uploadFile()"><div class="usage-bar"><div class="bar"><div class="bar-fill" id="usageBar" style="width:0%"></div></div><span id="usageText">0%</span></div></div><div class="chat-container" id="chat"></div><div class="typing" id="typing"><span></span><span></span><span></span></div><div class="input-area"><input type="text" id="msgInput" placeholder="Type your message..." autocomplete="off"><button id="sendBtn" onclick="sendMessage()">Send</button></div></div><script src="auth.js"></script><script src="chat.js"></script></body></html>'''
           AUTH_JS="""const CONFIG={API_ENDPOINT:"__API_ENDPOINT__",USER_POOL_ID:"__USER_POOL_ID__",CLIENT_ID:"__CLIENT_ID__",REGION:"__REGION__"};
           function getToken(){return sessionStorage.getItem("id_token")}
           function setTokens(i,a,r){sessionStorage.setItem("id_token",i);sessionStorage.setItem("access_token",a);if(r)sessionStorage.setItem("refresh_token",r)}
@@ -759,7 +893,7 @@ Resources:
           let isSignUp=false;
           function toggleAuthMode(){isSignUp=!isSignUp;document.getElementById("authTitle").textContent=isSignUp?"Create Account":"Sign In";document.getElementById("authSubtitle").textContent=isSignUp?"Create an account to start chatting":"Sign in to start chatting with AI";document.getElementById("authBtn").textContent=isSignUp?"Sign Up":"Sign In";document.getElementById("authConfirm").style.display=isSignUp?"block":"none";document.getElementById("authSwitch").innerHTML=isSignUp?'Have an account? <a onclick="toggleAuthMode()">Sign In</a>':'No account? <a onclick="toggleAuthMode()">Sign Up</a>';document.getElementById("authError").style.display="none"}
           function showAuthError(m){const e=document.getElementById("authError");e.textContent=m;e.style.display="block"}
-          async function handleAuth(){const email=document.getElementById("authEmail").value.trim();const pw=document.getElementById("authPassword").value;const cf=document.getElementById("authConfirm").value;if(!email||!pw)return showAuthError("Email and password required");if(isSignUp&&pw!==cf)return showAuthError("Passwords don't match");const ep="https://cognito-idp."+CONFIG.REGION+".amazonaws.com/";try{if(isSignUp){const r=await fetch(ep,{method:"POST",headers:{"Content-Type":"application/x-amz-json-1.1","X-Amz-Target":"AWSCognitoIdentityProviderService.SignUp"},body:JSON.stringify({ClientId:CONFIG.CLIENT_ID,Username:email,Password:pw,UserAttributes:[{Name:"email",Value:email}]})});const d=await r.json();if(!r.ok)throw new Error(d.message||"Sign up failed");showAuthError("Account created! Check email to verify then sign in.");toggleAuthMode()}else{const r=await fetch(ep,{method:"POST",headers:{"Content-Type":"application/x-amz-json-1.1","X-Amz-Target":"AWSCognitoIdentityProviderService.InitiateAuth"},body:JSON.stringify({AuthFlow:"USER_PASSWORD_AUTH",ClientId:CONFIG.CLIENT_ID,AuthParameters:{USERNAME:email,PASSWORD:pw}})});const d=await r.json();if(!r.ok)throw new Error(d.message||"Sign in failed");setTokens(d.AuthenticationResult.IdToken,d.AuthenticationResult.AccessToken,d.AuthenticationResult.RefreshToken);showApp()}}catch(e){showAuthError(e.message)}}
+          async function handleAuth(){const email=document.getElementById("authEmail").value.trim();const pw=document.getElementById("authPassword").value;const cf=document.getElementById("authConfirm").value;if(!email||!pw)return showAuthError("Email and password required");if(isSignUp&&pw!==cf)return showAuthError("Passwords don't match");const ep="https://cognito-idp."+CONFIG.REGION+".amazonaws.com/";try{if(isSignUp){const r=await fetch(ep,{method:"POST",headers:{"Content-Type":"application/x-amz-json-1.1","X-Amz-Target":"AWSCognitoIdentityProviderService.SignUp"},body:JSON.stringify({ClientId:CONFIG.CLIENT_ID,Username:email,Password:pw,UserAttributes:[{Name:"email",Value:email}]})});const d=await r.json();if(!r.ok)throw new Error(d.message||"Sign up failed");showAuthError("Account created! Check your email and click the verification link to confirm your account, then sign in.");toggleAuthMode()}else{const r=await fetch(ep,{method:"POST",headers:{"Content-Type":"application/x-amz-json-1.1","X-Amz-Target":"AWSCognitoIdentityProviderService.InitiateAuth"},body:JSON.stringify({AuthFlow:"USER_PASSWORD_AUTH",ClientId:CONFIG.CLIENT_ID,AuthParameters:{USERNAME:email,PASSWORD:pw}})});const d=await r.json();if(!r.ok)throw new Error(d.message||"Sign in failed");setTokens(d.AuthenticationResult.IdToken,d.AuthenticationResult.AccessToken,d.AuthenticationResult.RefreshToken);showApp()}}catch(e){showAuthError(e.message)}}
           function signOut(){clearTokens();document.getElementById("app").style.display="none";document.getElementById("authScreen").style.display="flex"}
           function showApp(){document.getElementById("authScreen").style.display="none";document.getElementById("app").style.display="flex";document.getElementById("userInfo").textContent=getUserEmail()||"";loadUsage()}
           window.addEventListener("DOMContentLoaded",()=>{if(isLoggedIn())showApp()});"""
