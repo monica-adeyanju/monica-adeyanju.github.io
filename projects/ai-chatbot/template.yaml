@@ -610,6 +610,7 @@ Resources:
             {
               "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
               "properties": {
+                "region": "${AWS::Region}",
                 "metrics": [["${AppName}", "MessagesProcessed", "Service", "Chatbot"]],
                 "period": 300, "stat": "Sum", "title": "Messages Processed"
               }
@@ -617,6 +618,7 @@ Resources:
             {
               "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
               "properties": {
+                "region": "${AWS::Region}",
                 "metrics": [["${AppName}", "TokensUsed", "Service", "Chatbot"]],
                 "period": 300, "stat": "Sum", "title": "Tokens Used"
               }
@@ -624,6 +626,7 @@ Resources:
             {
               "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
               "properties": {
+                "region": "${AWS::Region}",
                 "metrics": [
                   ["${AppName}", "ModelLatency", "Service", "Chatbot"],
                   ["${AppName}", "FallbackInvocations", "Service", "Chatbot"]
@@ -634,6 +637,7 @@ Resources:
             {
               "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
               "properties": {
+                "region": "${AWS::Region}",
                 "metrics": [
                   ["${AppName}", "GuardrailBlocked", "Service", "Chatbot"],
                   ["${AppName}", "RateLimited", "Service", "Chatbot"]
