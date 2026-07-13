@@ -446,14 +446,17 @@ Resources:
               except:return R(400,{"error":"Invalid JSON"})
               fn=body.get("filename","").strip()
               if not fn:return R(400,{"error":"filename required"})
-              safe="".join(c for c in fn if c.isalnum() or c in".-_")
+              safe="".join(c for c in fn if c.isalnum() or c in".-_ ")
+              safe=safe.replace(" ","_")
               ext=os.path.splitext(safe)[1].lower()
               allowed=[".txt",".md",".pdf",".csv",".json",".docx"]
               if ext not in allowed:return R(400,{"error":f"Allowed: {', '.join(allowed)}"})
               key=f"users/{uid}/{safe}"
+              ct_map={".txt":"text/plain",".md":"text/markdown",".pdf":"application/pdf",".csv":"text/csv",".json":"application/json",".docx":"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+              content_type=ct_map.get(ext,"application/octet-stream")
               try:
-                  url=s3.generate_presigned_url("put_object",Params={"Bucket":DB,"Key":key},ExpiresIn=300)
-                  return R(200,{"uploadUrl":url,"key":key})
+                  url=s3.generate_presigned_url("put_object",Params={"Bucket":DB,"Key":key,"ContentType":content_type},ExpiresIn=300)
+                  return R(200,{"uploadUrl":url,"key":key,"contentType":content_type})
               except Exception as ex:return R(500,{"error":"Upload URL failed"})
           def hist(e,uid):
               p=e.get("queryStringParameters")or{};sid=p.get("sessionId","").strip()
@@ -899,11 +902,12 @@ Resources:
           window.addEventListener("DOMContentLoaded",()=>{if(isLoggedIn())showApp()});"""
           CHAT_JS="""let sid=null,loading=false;
           const chat=document.getElementById("chat"),msgInput=document.getElementById("msgInput"),sendBtn=document.getElementById("sendBtn"),typingEl=document.getElementById("typing");
-          async function sendMessage(){const m=msgInput.value.trim();if(!m||loading)return;addMsg("user",m);msgInput.value="";setLoad(true);const rag=document.getElementById("ragToggle").checked;try{const r=await apiFetch("/chat",{method:"POST",body:JSON.stringify({message:m,sessionId:sid,useRAG:rag})});if(!r.ok){const e=await r.json();throw new Error(e.error||"HTTP "+r.status)}const d=await r.json();sid=d.sessionId;const meta=[];if(d.tokensUsed)meta.push(d.tokensUsed+" tokens");if(d.ragUsed)meta.push("RAG");addMsg("assistant",d.response,meta.join(" | "));loadUsage()}catch(e){addMsg("error","Error: "+e.message)}finally{setLoad(false)}}
-          function addMsg(role,text,metaText){const d=document.createElement("div");d.className="message "+role;d.textContent=text;if(metaText){const m=document.createElement("div");m.className="meta";m.textContent=metaText;d.appendChild(m)}chat.appendChild(d);chat.scrollTop=chat.scrollHeight}
+          function md(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/^### (.+)$/gm,'<strong>$1</strong>').replace(/^## (.+)$/gm,'<h4 style="margin:.5rem 0 .25rem">$1</h4>').replace(/^# (.+)$/gm,'<h3 style="margin:.5rem 0 .25rem">$1</h3>').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>').replace(/\\*(.+?)\\*/g,'<em>$1</em>').replace(/^- (.+)$/gm,'<li style="margin-left:1rem">$1</li>').replace(/^\\d+\\. (.+)$/gm,'<li style="margin-left:1rem">$1</li>').replace(/`([^`]+)`/g,'<code style="background:#f0ebe4;padding:.1rem .3rem;border-radius:3px;font-size:.82rem">$1</code>').replace(/\\n/g,'<br>')}
+          async function sendMessage(){const m=msgInput.value.trim();if(!m||loading)return;addMsg("user",m,null,false);msgInput.value="";setLoad(true);const rag=document.getElementById("ragToggle").checked;try{const r=await apiFetch("/chat",{method:"POST",body:JSON.stringify({message:m,sessionId:sid,useRAG:rag})});if(!r.ok){const e=await r.json();throw new Error(e.error||"HTTP "+r.status)}const d=await r.json();sid=d.sessionId;const meta=[];if(d.tokensUsed)meta.push(d.tokensUsed+" tokens");if(d.ragUsed)meta.push("RAG");addMsg("assistant",d.response,meta.join(" | "),true);loadUsage()}catch(e){addMsg("error","Error: "+e.message,null,false)}finally{setLoad(false)}}
+          function addMsg(role,text,metaText,renderMd){const d=document.createElement("div");d.className="message "+role;if(renderMd){d.innerHTML=md(text)}else{d.textContent=text}if(metaText){const m=document.createElement("div");m.className="meta";m.textContent=metaText;d.appendChild(m)}chat.appendChild(d);chat.scrollTop=chat.scrollHeight}
           function setLoad(s){loading=s;sendBtn.disabled=s;typingEl.style.display=s?"block":"none";if(s){chat.appendChild(typingEl);chat.scrollTop=chat.scrollHeight}}
           async function loadUsage(){try{const r=await apiFetch("/usage",{method:"GET"});if(!r.ok)return;const d=await r.json();document.getElementById("usageBar").style.width=Math.min(d.percentUsed||0,100)+"%";document.getElementById("usageText").textContent=(d.percentUsed||0)+"% used"}catch{}}
-          async function uploadFile(){const f=document.getElementById("fileInput").files[0];if(!f)return;try{const r=await apiFetch("/upload",{method:"POST",body:JSON.stringify({filename:f.name})});if(!r.ok){const e=await r.json();throw new Error(e.error)}const{uploadUrl}=await r.json();const u=await fetch(uploadUrl,{method:"PUT",body:f});if(!u.ok)throw new Error("Upload failed");alert("Uploaded: "+f.name)}catch(e){alert("Upload error: "+e.message)}document.getElementById("fileInput").value=""}
+          async function uploadFile(){const f=document.getElementById("fileInput").files[0];if(!f)return;try{const r=await apiFetch("/upload",{method:"POST",body:JSON.stringify({filename:f.name})});if(!r.ok){const e=await r.json();throw new Error(e.error)}const d=await r.json();const u=await fetch(d.uploadUrl,{method:"PUT",body:f,headers:{"Content-Type":d.contentType||"application/octet-stream"}});if(!u.ok)throw new Error("Upload failed: "+u.status);alert("Uploaded: "+f.name)}catch(e){alert("Upload error: "+e.message)}document.getElementById("fileInput").value=""}
           async function apiFetch(path,opts={}){const t=getToken();return fetch(CONFIG.API_ENDPOINT+path,{...opts,headers:{"Content-Type":"application/json",...(t?{Authorization:t}:{}),...(opts.headers||{})}})}
           msgInput.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage()}});"""
 
