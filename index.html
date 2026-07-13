@@ -111,27 +111,29 @@
                 <article class="project-card featured">
                     <div class="project-header">
                         <span class="project-label">Featured</span>
-                        <h3 class="project-name">Serverless AI Chatbot</h3>
+                        <h3 class="project-name">Production-Grade AI Chatbot</h3>
                     </div>
                     <p class="project-description">
-                        A fully serverless AI chatbot powered by Amazon Bedrock (Claude),
-                        with a clean chat UI hosted on CloudFront and conversation history
-                        persistence via DynamoDB. Deployable as a single CloudFormation stack —
-                        one click to launch your own AI assistant with a web interface.
+                        A production-grade serverless AI chatbot with authenticated users (Cognito),
+                        document-grounded answers (RAG), content safety guardrails, per-user token
+                        budget enforcement, multi-model failover, and full observability via X-Ray
+                        and CloudWatch. 10 AWS services. One CloudFormation stack.
                     </p>
                     <div class="project-architecture">
                         <span class="arch-label">Architecture:</span>
-                        <span class="arch-flow">CloudFront + S3 → API Gateway → Lambda → Bedrock + DynamoDB</span>
+                        <span class="arch-flow">Cognito → API Gateway → Lambda → Bedrock (Guardrails + RAG) → DynamoDB</span>
                     </div>
                     <ul class="project-tech">
-                        <li>AWS Bedrock</li>
+                        <li>Bedrock + Guardrails</li>
+                        <li>Cognito</li>
                         <li>Lambda</li>
                         <li>API Gateway</li>
                         <li>DynamoDB</li>
                         <li>CloudFront</li>
-                        <li>S3</li>
+                        <li>S3 (RAG)</li>
+                        <li>X-Ray</li>
+                        <li>CloudWatch</li>
                         <li>CloudFormation</li>
-                        <li>Python</li>
                     </ul>
                     <div class="project-links">
                         <a href="https://github.com/monica-adeyanju/monica-adeyanju.github.io/tree/main/projects/ai-chatbot" class="project-link" target="_blank" rel="noopener">

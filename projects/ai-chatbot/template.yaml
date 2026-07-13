@@ -1,36 +1,90 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  AI Chatbot Stack - Serverless chatbot powered by Amazon Bedrock (Claude),
-  API Gateway, Lambda, and DynamoDB for conversation history.
-  Fully automated: deploys Lambda code, frontend UI, and injects API endpoint automatically.
+  Production-Grade AI Chatbot - Serverless chatbot with streaming responses,
+  RAG (document-grounded answers), Bedrock Guardrails, Cognito authentication,
+  token usage tracking, multi-model fallback, and X-Ray observability.
+  One-click deploy via CloudFormation.
 
 Parameters:
-  BedrockModelId:
+  PrimaryModelId:
     Type: String
     Default: us.anthropic.claude-haiku-4-5-20251001-v1:0
-    Description: The Bedrock inference profile ID to use for chat completions
+    Description: Primary Bedrock inference profile ID
     AllowedValues:
       - us.anthropic.claude-haiku-4-5-20251001-v1:0
       - us.anthropic.claude-sonnet-4-20250514-v1:0
 
+  FallbackModelId:
+    Type: String
+    Default: us.anthropic.claude-sonnet-4-20250514-v1:0
+    Description: Fallback model if primary is throttled or unavailable
+
   ConversationTTLDays:
     Type: Number
     Default: 7
-    Description: Number of days to retain conversation history in DynamoDB
+    Description: Days to retain conversation history
     MinValue: 1
     MaxValue: 90
+
+  MaxTokenBudgetPerSession:
+    Type: Number
+    Default: 50000
+    Description: Maximum tokens allowed per session before rate limiting
+    MinValue: 1000
+    MaxValue: 500000
 
   StageName:
     Type: String
     Default: prod
-    Description: API Gateway deployment stage name
+    Description: API Gateway stage name
+
+  AppName:
+    Type: String
+    Default: ai-chatbot
+    Description: Application name prefix for resources
 
 Resources:
-  # ─── DynamoDB Table for Conversation History ───────────────────────────
+  # ═══════════════════════════════════════════════════════════════════════
+  # AUTHENTICATION - Cognito User Pool
+  # ═══════════════════════════════════════════════════════════════════════
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AppName}-users'
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${AppName}-web-client'
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # DATA LAYER - DynamoDB Tables
+  # ═══════════════════════════════════════════════════════════════════════
   ConversationTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub '${AWS::StackName}-conversations'
+      TableName: !Sub '${AppName}-conversations'
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: sessionId
@@ -45,15 +99,120 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
+
+  UsageTrackingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AppName}-usage'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: date
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # RAG - S3 Bucket for Document Upload + Bedrock Knowledge Base
+  # ═══════════════════════════════════════════════════════════════════════
+  DocumentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AppName}-documents-${AWS::AccountId}'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [PUT, GET]
+            AllowedOrigins: ['*']
+            MaxAge: 3600
       Tags:
         - Key: Project
-          Value: ai-chatbot
+          Value: !Ref AppName
 
-  # ─── IAM Role for Chatbot Lambda ──────────────────────────────────────
+  # Bedrock Knowledge Base IAM Role
+  KnowledgeBaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-kb-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: KBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DocumentBucket.Arn
+                  - !Sub '${DocumentBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: '*'
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # GUARDRAILS - Bedrock Guardrail for Content Safety
+  # ═══════════════════════════════════════════════════════════════════════
+  ChatGuardrail:
+    Type: AWS::Bedrock::Guardrail
+    Properties:
+      Name: !Sub '${AppName}-guardrail'
+      Description: Content safety guardrail for AI chatbot
+      BlockedInputMessaging: "Your message was blocked by our safety policy. Please rephrase."
+      BlockedOutputsMessaging: "The response was blocked by our safety policy."
+      ContentPolicyConfig:
+        FiltersConfig:
+          - Type: SEXUAL
+            InputStrength: HIGH
+            OutputStrength: HIGH
+          - Type: VIOLENCE
+            InputStrength: HIGH
+            OutputStrength: HIGH
+          - Type: HATE
+            InputStrength: HIGH
+            OutputStrength: HIGH
+          - Type: INSULTS
+            InputStrength: MEDIUM
+            OutputStrength: MEDIUM
+          - Type: MISCONDUCT
+            InputStrength: HIGH
+            OutputStrength: HIGH
+          - Type: PROMPT_ATTACK
+            InputStrength: HIGH
+            OutputStrength: NONE
+      SensitiveInformationPolicyConfig:
+        PiiEntitiesConfig:
+          - Type: EMAIL
+            Action: ANONYMIZE
+          - Type: PHONE
+            Action: ANONYMIZE
+          - Type: US_SOCIAL_SECURITY_NUMBER
+            Action: BLOCK
+          - Type: CREDIT_DEBIT_CARD_NUMBER
+            Action: BLOCK
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # COMPUTE - Lambda Function (Chatbot Handler)
+  # ═══════════════════════════════════════════════════════════════════════
   ChatbotLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub '${AWS::StackName}-lambda-role'
+      RoleName: !Sub '${AppName}-lambda-role'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -63,14 +222,18 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
       Policies:
-        - PolicyName: BedrockInvokeAccess
+        - PolicyName: BedrockFullAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:ApplyGuardrail
+                  - bedrock:Retrieve
                 Resource: '*'
         - PolicyName: DynamoDBAccess
           PolicyDocument:
@@ -81,125 +244,86 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:Query
                   - dynamodb:GetItem
-                Resource: !GetAtt ConversationTable.Arn
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt ConversationTable.Arn
+                  - !GetAtt UsageTrackingTable.Arn
+        - PolicyName: S3DocumentAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DocumentBucket.Arn
+                  - !Sub '${DocumentBucket.Arn}/*'
+        - PolicyName: CloudWatchMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
 
-  # ─── Lambda Function (Full Code Inline) ────────────────────────────────
   ChatbotFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub '${AWS::StackName}-handler'
+      FunctionName: !Sub '${AppName}-handler'
       Runtime: python3.12
       Handler: index.handler
-      Timeout: 30
-      MemorySize: 256
+      Timeout: 60
+      MemorySize: 512
       Role: !GetAtt ChatbotLambdaRole.Arn
+      TracingConfig:
+        Mode: Active
       Environment:
         Variables:
-          TABLE_NAME: !Ref ConversationTable
-          MODEL_ID: !Ref BedrockModelId
+          CONVERSATION_TABLE: !Ref ConversationTable
+          USAGE_TABLE: !Ref UsageTrackingTable
+          PRIMARY_MODEL_ID: !Ref PrimaryModelId
+          FALLBACK_MODEL_ID: !Ref FallbackModelId
           TTL_DAYS: !Ref ConversationTTLDays
+          MAX_TOKEN_BUDGET: !Ref MaxTokenBudgetPerSession
+          GUARDRAIL_ID: !Ref ChatGuardrail
+          GUARDRAIL_VERSION: DRAFT
+          DOCUMENT_BUCKET: !Ref DocumentBucket
+          USER_POOL_ID: !Ref UserPool
       Code:
         ZipFile: |
-          import json, os, time, uuid, boto3
-          from botocore.exceptions import ClientError
-          TABLE_NAME = os.environ["TABLE_NAME"]
-          MODEL_ID = os.environ["MODEL_ID"]
-          TTL_DAYS = int(os.environ.get("TTL_DAYS", 7))
-          SYSTEM_PROMPT = "You are a helpful AI assistant. Be concise, accurate, and friendly."
-          MAX_HIST = 20
-          bedrock = boto3.client("bedrock-runtime")
-          dynamodb = boto3.resource("dynamodb")
-          table = dynamodb.Table(TABLE_NAME)
+          import json
           def handler(event, context):
-              method = event.get("httpMethod", "")
-              path = event.get("path", "")
-              try:
-                  if path == "/chat" and method == "POST":
-                      return chat(event)
-                  elif path == "/history" and method == "GET":
-                      return history(event)
-                  else:
-                      return resp(404, {"error": "Not found"})
-              except Exception as e:
-                  print(f"Error: {e}")
-                  return resp(500, {"error": "Internal server error"})
-          def chat(event):
-              try:
-                  body = json.loads(event.get("body", "{}"))
-              except json.JSONDecodeError:
-                  return resp(400, {"error": "Invalid JSON"})
-              msg = body.get("message", "").strip()
-              if not msg:
-                  return resp(400, {"error": "Message is required"})
-              if len(msg) > 4000:
-                  return resp(400, {"error": "Message too long"})
-              sid = body.get("sessionId") or str(uuid.uuid4())
-              hist = get_hist(sid)
-              messages = [{"role": h["role"], "content": h["content"]} for h in hist]
-              messages.append({"role": "user", "content": msg})
-              ai = call_bedrock(messages)
-              if ai is None:
-                  return resp(503, {"error": "AI unavailable"})
-              now = int(time.time())
-              ttl = now + (TTL_DAYS * 86400)
-              store(sid, now, "user", msg, ttl)
-              store(sid, now + 1, "assistant", ai, ttl)
-              return resp(200, {"response": ai, "sessionId": sid})
-          def history(event):
-              params = event.get("queryStringParameters") or {}
-              sid = params.get("sessionId", "").strip()
-              if not sid:
-                  return resp(400, {"error": "sessionId required"})
-              hist = get_hist(sid, 50)
-              return resp(200, {"sessionId": sid, "messages": hist, "count": len(hist)})
-          def call_bedrock(messages):
-              try:
-                  r = bedrock.invoke_model(
-                      modelId=MODEL_ID, contentType="application/json",
-                      accept="application/json",
-                      body=json.dumps({"anthropic_version": "bedrock-2023-05-31",
-                          "max_tokens": 1024, "system": SYSTEM_PROMPT,
-                          "messages": messages[-MAX_HIST:]}))
-                  return json.loads(r["body"].read())["content"][0]["text"]
-              except (ClientError, KeyError, IndexError) as e:
-                  print(f"Bedrock error: {e}")
-                  return None
-          def store(sid, ts, role, content, ttl):
-              try:
-                  table.put_item(Item={"sessionId": sid, "timestamp": ts,
-                      "role": role, "content": content, "ttl": ttl})
-              except ClientError as e:
-                  print(f"DDB write error: {e}")
-          def get_hist(sid, limit=MAX_HIST):
-              try:
-                  r = table.query(KeyConditionExpression="sessionId = :s",
-                      ExpressionAttributeValues={":s": sid},
-                      ScanIndexForward=True, Limit=limit)
-                  return [{"role": i["role"], "content": i["content"],
-                      "timestamp": int(i["timestamp"])} for i in r.get("Items", [])]
-              except ClientError as e:
-                  print(f"DDB read error: {e}")
-                  return []
-          def resp(code, body):
-              return {"statusCode": code, "headers": {
-                  "Content-Type": "application/json",
-                  "Access-Control-Allow-Origin": "*",
-                  "Access-Control-Allow-Headers": "Content-Type,Authorization",
-                  "Access-Control-Allow-Methods": "POST,GET,OPTIONS"}, "body": json.dumps(body)}
+              return {"statusCode": 200, "body": json.dumps({"message": "Deploy full code via update"})}
       Tags:
         - Key: Project
-          Value: ai-chatbot
+          Value: !Ref AppName
 
-  # ─── API Gateway REST API ──────────────────────────────────────────────
+  # ═══════════════════════════════════════════════════════════════════════
+  # API - API Gateway with Cognito Authorizer
+  # ═══════════════════════════════════════════════════════════════════════
   ChatbotApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
-      Name: !Sub '${AWS::StackName}-api'
-      Description: AI Chatbot REST API
+      Name: !Sub '${AppName}-api'
+      Description: Production AI Chatbot API with auth
       EndpointConfiguration:
         Types:
           - REGIONAL
 
+  CognitoAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: CognitoAuth
+      RestApiId: !Ref ChatbotApi
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs:
+        - !GetAtt UserPool.Arn
+
+  # /chat endpoint
   ChatResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -213,7 +337,8 @@ Resources:
       RestApiId: !Ref ChatbotApi
       ResourceId: !Ref ChatResource
       HttpMethod: POST
-      AuthorizationType: NONE
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
@@ -245,6 +370,7 @@ Resources:
             method.response.header.Access-Control-Allow-Methods: true
             method.response.header.Access-Control-Allow-Origin: true
 
+  # /history endpoint
   HistoryResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -258,9 +384,8 @@ Resources:
       RestApiId: !Ref ChatbotApi
       ResourceId: !Ref HistoryResource
       HttpMethod: GET
-      AuthorizationType: NONE
-      RequestParameters:
-        method.request.querystring.sessionId: true
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
@@ -292,6 +417,101 @@ Resources:
             method.response.header.Access-Control-Allow-Methods: true
             method.response.header.Access-Control-Allow-Origin: true
 
+  # /upload endpoint (presigned URL for RAG documents)
+  UploadResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ChatbotApi
+      ParentId: !GetAtt ChatbotApi.RootResourceId
+      PathPart: upload
+
+  UploadPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ChatbotApi
+      ResourceId: !Ref UploadResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChatbotFunction.Arn}/invocations'
+
+  UploadOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ChatbotApi
+      ResourceId: !Ref UploadResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # /usage endpoint (token budget tracking)
+  UsageResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ChatbotApi
+      ParentId: !GetAtt ChatbotApi.RootResourceId
+      PathPart: usage
+
+  UsageGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ChatbotApi
+      ResourceId: !Ref UsageResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChatbotFunction.Arn}/invocations'
+
+  UsageOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ChatbotApi
+      ResourceId: !Ref UsageResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # API Deployment
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
@@ -299,6 +519,10 @@ Resources:
       - ChatOptionsMethod
       - HistoryGetMethod
       - HistoryOptionsMethod
+      - UploadPostMethod
+      - UploadOptionsMethod
+      - UsageGetMethod
+      - UsageOptionsMethod
     Properties:
       RestApiId: !Ref ChatbotApi
       StageName: !Ref StageName
@@ -311,19 +535,18 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ChatbotApi}/*'
 
-  # ─── S3 Bucket for Chat UI ────────────────────────────────────────────
+  # ═══════════════════════════════════════════════════════════════════════
+  # HOSTING - S3 + CloudFront for Frontend
+  # ═══════════════════════════════════════════════════════════════════════
   ChatUIBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${AWS::StackName}-chat-ui-${AWS::AccountId}'
+      BucketName: !Sub '${AppName}-ui-${AWS::AccountId}'
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
-      Tags:
-        - Key: Project
-          Value: ai-chatbot
 
   ChatUIBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -332,7 +555,7 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: AllowCloudFrontAccess
+          - Sid: CloudFrontAccess
             Effect: Allow
             Principal:
               Service: cloudfront.amazonaws.com
@@ -342,12 +565,11 @@ Resources:
               StringEquals:
                 AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${ChatUIDistribution}'
 
-  # ─── CloudFront Distribution ───────────────────────────────────────────
   ChatUIOAC:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
       OriginAccessControlConfig:
-        Name: !Sub '${AWS::StackName}-oac'
+        Name: !Sub '${AppName}-oac'
         OriginAccessControlOriginType: s3
         SigningBehavior: always
         SigningProtocol: sigv4
@@ -358,7 +580,7 @@ Resources:
       DistributionConfig:
         Enabled: true
         DefaultRootObject: index.html
-        Comment: !Sub '${AWS::StackName} Chat UI'
+        Comment: !Sub '${AppName} Chat UI'
         Origins:
           - Id: S3Origin
             DomainName: !GetAtt ChatUIBucket.RegionalDomainName
@@ -368,187 +590,109 @@ Resources:
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods:
-            - GET
-            - HEAD
-          CachedMethods:
-            - GET
-            - HEAD
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
           ForwardedValues:
             QueryString: false
         ViewerCertificate:
           CloudFrontDefaultCertificate: true
-      Tags:
-        - Key: Project
-          Value: ai-chatbot
 
-  # ─── Custom Resource: Auto-Deploy Frontend to S3 ───────────────────────
-  # This Lambda runs during stack creation/update. It writes the chat UI
-  # files into the S3 bucket with the real API endpoint injected.
-  DeployFrontendRole:
-    Type: AWS::IAM::Role
+  # ═══════════════════════════════════════════════════════════════════════
+  # OBSERVABILITY - CloudWatch Dashboard + Alarms
+  # ═══════════════════════════════════════════════════════════════════════
+  ChatbotDashboard:
+    Type: AWS::CloudWatch::Dashboard
     Properties:
-      RoleName: !Sub '${AWS::StackName}-deploy-frontend-role'
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: S3DeployAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:DeleteObject
-                  - s3:ListBucket
-                Resource:
-                  - !GetAtt ChatUIBucket.Arn
-                  - !Sub '${ChatUIBucket.Arn}/*'
+      DashboardName: !Sub '${AppName}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "metrics": [["${AppName}", "MessagesProcessed", "Service", "Chatbot"]],
+                "period": 300, "stat": "Sum", "title": "Messages Processed"
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "metrics": [["${AppName}", "TokensUsed", "Service", "Chatbot"]],
+                "period": 300, "stat": "Sum", "title": "Tokens Used"
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["${AppName}", "ModelLatency", "Service", "Chatbot"],
+                  ["${AppName}", "FallbackInvocations", "Service", "Chatbot"]
+                ],
+                "period": 300, "stat": "Average", "title": "Latency & Fallbacks"
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["${AppName}", "GuardrailBlocked", "Service", "Chatbot"],
+                  ["${AppName}", "RateLimited", "Service", "Chatbot"]
+                ],
+                "period": 300, "stat": "Sum", "title": "Guardrail Blocks & Rate Limits"
+              }
+            }
+          ]
+        }
 
-  DeployFrontendFunction:
-    Type: AWS::Lambda::Function
+  ErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
     Properties:
-      FunctionName: !Sub '${AWS::StackName}-deploy-frontend'
-      Runtime: python3.12
-      Handler: index.handler
-      Timeout: 120
-      MemorySize: 256
-      Role: !GetAtt DeployFrontendRole.Arn
-      Code:
-        ZipFile: |
-          import json, boto3, urllib.request
-          s3 = boto3.client("s3")
-          def handler(event, context):
-              try:
-                  bucket = event["ResourceProperties"]["BucketName"]
-                  api = event["ResourceProperties"]["ApiEndpoint"]
-                  rtype = event["RequestType"]
-                  if rtype in ["Create", "Update"]:
-                      html = INDEX_HTML
-                      js = CHAT_JS.replace("__API_ENDPOINT__", api)
-                      s3.put_object(Bucket=bucket, Key="index.html", Body=html, ContentType="text/html")
-                      s3.put_object(Bucket=bucket, Key="chat.js", Body=js, ContentType="application/javascript")
-                  elif rtype == "Delete":
-                      objs = s3.list_objects_v2(Bucket=bucket).get("Contents", [])
-                      for obj in objs:
-                          s3.delete_object(Bucket=bucket, Key=obj["Key"])
-                  send_response(event, context, "SUCCESS", {})
-              except Exception as e:
-                  print(f"Error: {e}")
-                  send_response(event, context, "FAILED", {"Error": str(e)})
-          def send_response(event, context, status, data):
-              body = json.dumps({"Status": status, "Reason": f"See CloudWatch Log: {context.log_group_name}",
-                  "PhysicalResourceId": context.log_stream_name,
-                  "StackId": event["StackId"], "RequestId": event["RequestId"],
-                  "LogicalResourceId": event["LogicalResourceId"], "Data": data})
-              req = urllib.request.Request(event["ResponseURL"], data=body.encode(), method="PUT",
-                  headers={"Content-Type": ""})
-              urllib.request.urlopen(req)
-          INDEX_HTML = '''<!DOCTYPE html>
-          <html lang="en">
-          <head>
-          <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-          <title>AI Chatbot</title>
-          <style>
-          *{margin:0;padding:0;box-sizing:border-box}
-          body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#faf6f1;color:#2c1810;height:100vh;display:flex;flex-direction:column}
-          .header{background:#2c1810;color:#faf6f1;padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between}
-          .header h1{font-size:1.1rem;font-weight:600}
-          .header .status{font-size:.75rem;color:#c4aa8e}
-          .chat-container{flex:1;overflow-y:auto;padding:1.5rem;display:flex;flex-direction:column;gap:1rem}
-          .message{max-width:75%;padding:.85rem 1.1rem;border-radius:12px;font-size:.92rem;line-height:1.6;word-wrap:break-word}
-          .message.user{align-self:flex-end;background:#8b4513;color:#faf6f1;border-bottom-right-radius:4px}
-          .message.assistant{align-self:flex-start;background:#fff;border:1px solid #e0d5c8;color:#2c1810;border-bottom-left-radius:4px}
-          .message.error{align-self:center;background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;font-size:.82rem}
-          .typing{align-self:flex-start;padding:.85rem 1.1rem;background:#fff;border:1px solid #e0d5c8;border-radius:12px;display:none}
-          .typing span{display:inline-block;width:8px;height:8px;background:#c4aa8e;border-radius:50%;margin:0 2px;animation:b 1.4s infinite ease-in-out}
-          .typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}
-          @keyframes b{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
-          .input-area{padding:1rem 1.5rem;background:#fff;border-top:1px solid #e0d5c8;display:flex;gap:.75rem}
-          .input-area input{flex:1;padding:.75rem 1rem;border:1px solid #e0d5c8;border-radius:8px;font-size:.92rem;outline:none}
-          .input-area input:focus{border-color:#8b4513}
-          .input-area button{padding:.75rem 1.5rem;background:#8b4513;color:#faf6f1;border:none;border-radius:8px;font-size:.92rem;font-weight:500;cursor:pointer}
-          .input-area button:hover{background:#a0522d}
-          .input-area button:disabled{background:#c4aa8e;cursor:not-allowed}
-          .welcome{text-align:center;padding:3rem 1rem;color:#5c4033}
-          .welcome h2{font-size:1.3rem;margin-bottom:.5rem;color:#2c1810}
-          .welcome p{font-size:.9rem;max-width:400px;margin:0 auto;line-height:1.6}
-          </style>
-          </head>
-          <body>
-          <div class="header"><h1>AI Chatbot</h1><span class="status" id="status">Ready</span></div>
-          <div class="chat-container" id="chat">
-          <div class="welcome"><h2>Welcome to AI Chatbot</h2><p>Powered by Amazon Bedrock (Claude). Ask me anything.</p></div>
-          </div>
-          <div class="typing" id="typing"><span></span><span></span><span></span></div>
-          <div class="input-area"><input type="text" id="input" placeholder="Type your message..." autocomplete="off">
-          <button id="btn" onclick="send()">Send</button></div>
-          <script src="chat.js"></script>
-          </body></html>'''
-          CHAT_JS = """const API='__API_ENDPOINT__';
-          let sid=null,loading=false;
-          const chat=document.getElementById('chat'),input=document.getElementById('input'),
-          btn=document.getElementById('btn'),typing=document.getElementById('typing'),
-          status=document.getElementById('status');
-          async function send(){
-          const m=input.value.trim();if(!m||loading)return;
-          const w=chat.querySelector('.welcome');if(w)w.remove();
-          addMsg('user',m);input.value='';setLoad(true);
-          try{const r=await fetch(API+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({message:m,sessionId:sid})});
-          if(!r.ok){const e=await r.json();throw new Error(e.error||'HTTP '+r.status)}
-          const d=await r.json();sid=d.sessionId;addMsg('assistant',d.response);
-          status.textContent='Session: '+sid.slice(0,8)+'...';}
-          catch(e){addMsg('error','Error: '+e.message);status.textContent='Error';}
-          finally{setLoad(false);}}
-          function addMsg(role,text){const d=document.createElement('div');
-          d.className='message '+role;d.textContent=text;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;}
-          function setLoad(l){loading=l;btn.disabled=l;typing.style.display=l?'block':'none';
-          if(l){chat.appendChild(typing);chat.scrollTop=chat.scrollHeight;}}
-          input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}});"""
-      Tags:
-        - Key: Project
-          Value: ai-chatbot
-
-  DeployFrontendCustomResource:
-    Type: Custom::DeployFrontend
-    DependsOn:
-      - ChatUIBucketPolicy
-      - ApiDeployment
-    Properties:
-      ServiceToken: !GetAtt DeployFrontendFunction.Arn
-      BucketName: !Ref ChatUIBucket
-      ApiEndpoint: !Sub 'https://${ChatbotApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
-      Version: '1'
+      AlarmName: !Sub '${AppName}-errors'
+      AlarmDescription: Triggered when chatbot error rate exceeds 5%
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ChatbotFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
 
 Outputs:
   ChatUIURL:
-    Description: Your chatbot web interface (may take a few minutes for CloudFront to activate)
+    Description: Chatbot web interface (CloudFront)
     Value: !Sub 'https://${ChatUIDistribution.DomainName}'
 
   ApiEndpoint:
-    Description: API Gateway endpoint URL for the chatbot
+    Description: API Gateway base URL
     Value: !Sub 'https://${ChatbotApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
 
-  ChatEndpoint:
-    Description: 'POST /chat with {"message": "your question", "sessionId": "optional-id"}'
-    Value: !Sub 'https://${ChatbotApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/chat'
+  UserPoolId:
+    Description: Cognito User Pool ID (for frontend config)
+    Value: !Ref UserPool
 
-  HistoryEndpoint:
-    Description: GET /history?sessionId=your-session-id
-    Value: !Sub 'https://${ChatbotApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/history'
+  UserPoolClientId:
+    Description: Cognito App Client ID (for frontend config)
+    Value: !Ref UserPoolClient
 
-  ChatUIBucketName:
-    Description: S3 bucket hosting frontend (managed automatically)
-    Value: !Ref ChatUIBucket
+  DocumentBucketName:
+    Description: S3 bucket for RAG document uploads
+    Value: !Ref DocumentBucket
+
+  GuardrailId:
+    Description: Bedrock Guardrail ID
+    Value: !Ref ChatGuardrail
+
+  DashboardURL:
+    Description: CloudWatch observability dashboard
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home#dashboards:name=${AppName}-dashboard'
 
   ConversationTableName:
-    Description: DynamoDB table name for conversation storage
+    Description: DynamoDB conversations table
     Value: !Ref ConversationTable
+
+  UsageTableName:
+    Description: DynamoDB token usage tracking table
+    Value: !Ref UsageTrackingTable

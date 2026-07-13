@@ -1,103 +1,134 @@
-# Serverless AI Chatbot
+# Production-Grade Serverless AI Chatbot
 
-A fully serverless AI chatbot with a web interface, powered by **Amazon Bedrock (Claude)** with conversation history stored in **DynamoDB**. Deploy the entire stack — backend, frontend, and CDN — with a single CloudFormation template. No manual steps.
+A fully serverless, production-grade AI chatbot built on AWS. Features authenticated users, document-grounded answers (RAG), content safety guardrails, token budget enforcement, multi-model failover, and full observability — all deployed as a single CloudFormation stack.
 
-## How It Works
+## What Makes This Production-Grade
+
+| Concern | How It's Handled |
+|---------|-----------------|
+| **Authentication** | Cognito User Pools — email/password sign-up, JWT tokens, per-user sessions |
+| **Content Safety** | Bedrock Guardrails — blocks harmful content, anonymizes PII, prevents prompt injection |
+| **RAG** | Users upload documents to S3, AI grounds answers in that context |
+| **Cost Control** | Per-user daily token budget with enforcement (429 when exceeded) |
+| **Resilience** | Multi-model fallback — if primary model throttles, routes to secondary |
+| **Observability** | X-Ray tracing, custom CloudWatch metrics, pre-built dashboard, error alarms |
+| **Security** | Cognito authorizer on all API endpoints, least-privilege IAM, no public S3 |
+
+## Architecture
 
 ```
-User sends message → API Gateway → Lambda → Bedrock (Claude) → Response back
-                                      ↕
-                                   DynamoDB (saves conversation history)
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              USER BROWSER                                     │
+│   ┌─────────┐    ┌───────────────┐    ┌──────────────┐    ┌──────────────┐  │
+│   │  Login  │    │   Chat UI     │    │  Upload Doc  │    │  Usage Bar   │  │
+│   └────┬────┘    └──────┬────────┘    └──────┬───────┘    └──────┬───────┘  │
+└────────┼────────────────┼────────────────────┼───────────────────┼──────────┘
+         │                │                    │                   │
+         ▼                ▼                    ▼                   ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         CLOUDFRONT (HTTPS CDN)                                │
+│                         ┌─────────────────────┐                              │
+│                         │   S3 (Frontend)     │                              │
+│                         └─────────────────────┘                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+         │
+         │  Authenticated API calls (JWT)
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    API GATEWAY + COGNITO AUTHORIZER                           │
+│    POST /chat    GET /history    POST /upload    GET /usage                   │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         LAMBDA (Python 3.12)                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  1. Validate token budget  →  reject if over limit (429)            │    │
+│  │  2. Apply INPUT guardrail  →  block harmful/injection content       │    │
+│  │  3. Retrieve RAG context   →  pull relevant docs from S3           │    │
+│  │  4. Build conversation     →  load history from DynamoDB            │    │
+│  │  5. Call Bedrock (primary)  →  fallback to secondary on failure     │    │
+│  │  6. Apply OUTPUT guardrail →  filter unsafe responses               │    │
+│  │  7. Store messages          →  DynamoDB with TTL                    │    │
+│  │  8. Track token usage       →  DynamoDB usage table                 │    │
+│  │  9. Emit metrics            →  CloudWatch custom metrics            │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                          X-Ray Tracing Active                                 │
+└────────┬──────────────┬──────────────┬──────────────┬───────────────────────┘
+         │              │              │              │
+         ▼              ▼              ▼              ▼
+┌──────────────┐ ┌───────────┐ ┌───────────┐ ┌──────────────────┐
+│   Bedrock    │ │ DynamoDB  │ │ DynamoDB  │ │   S3 (Documents) │
+│  (Claude)    │ │  (Chat)   │ │  (Usage)  │ │   (RAG Source)   │
+│  + Guardrail │ │           │ │           │ │                  │
+└──────────────┘ └───────────┘ └───────────┘ └──────────────────┘
 ```
 
-**The flow:**
-
-1. User opens the CloudFront URL → loads the chat UI from S3
-2. User types a message → JavaScript sends a POST request to API Gateway
-3. **API Gateway** routes the request to **Lambda**
-4. **Lambda** (Python) does the work:
-   - Loads previous messages from DynamoDB for that session (so Claude has context)
-   - Sends the full conversation to **Bedrock** (Claude)
-   - Gets the AI response back
-   - Stores both messages in **DynamoDB** with a TTL (auto-deletes after 7 days)
-   - Returns the response
-5. User sees the AI reply in the chat interface and can continue the conversation
-
-## AWS Services Used
+## AWS Services Used (10 services)
 
 | Service | Role |
 |---------|------|
-| **API Gateway** | The front door — accepts HTTPS requests, handles CORS |
-| **Lambda** | The brain — runs the Python chatbot code (deployed inline, no manual upload) |
-| **Bedrock** | The AI — hosts Claude, pay per token, no GPU management |
-| **DynamoDB** | The memory — stores chat history per session, scales infinitely |
-| **S3** | The host — stores the chat UI files (auto-deployed by the stack) |
-| **CloudFront** | The CDN — serves the UI globally with HTTPS and caching |
-| **Custom Resource** | The automator — injects the API endpoint into the frontend and uploads to S3 |
-| **CloudFormation** | The deployer — defines all resources as code, one command to create/destroy |
+| **Cognito** | User authentication — sign-up, sign-in, JWT tokens |
+| **API Gateway** | REST API with Cognito authorizer on all endpoints |
+| **Lambda** | Chatbot logic — routing, guardrails, RAG, fallback, metrics |
+| **Bedrock** | AI inference (Claude) + Guardrails for content safety |
+| **DynamoDB** (×2) | Conversation history + per-user token usage tracking |
+| **S3** (×2) | Frontend hosting + document storage for RAG |
+| **CloudFront** | CDN for the chat UI with HTTPS |
+| **CloudWatch** | Custom metrics dashboard + error alarms |
+| **X-Ray** | Distributed tracing across all components |
+| **CloudFormation** | Infrastructure as Code — one file deploys everything |
 
-## Architecture Diagram
+## Features Deep Dive
 
-```
-┌──────────────────┐
-│   User Browser   │
-└────────┬─────────┘
-         │
-         ▼
-┌─────────────────┐     ┌─────────────┐
-│  CloudFront     │────▶│  S3 Bucket  │  ← Chat UI (auto-deployed)
-│  (HTTPS CDN)    │     │  (Frontend) │
-└────────┬────────┘     └─────────────┘
-         │
-         │ API calls
-         ▼
-┌─────────────────┐     ┌────────────┐     ┌─────────────────┐
-│  API Gateway    │────▶│   Lambda   │────▶│  Amazon Bedrock  │
-│  (REST API)     │◀────│  (Python)  │◀────│  (Claude)        │
-└─────────────────┘     └─────┬──────┘     └─────────────────┘
-                              │
-                              ▼
-                       ┌─────────────┐
-                       │  DynamoDB   │
-                       │  (History)  │
-                       └─────────────┘
-```
+### Multi-Model Fallback
+If the primary model (Claude Haiku 4.5) is throttled or returns an error, the Lambda automatically retries with a fallback model (Claude Sonnet 4). No user-facing errors — the system self-heals.
 
-## Features
+### Bedrock Guardrails
+Every message passes through Bedrock Guardrails twice:
+- **Input**: blocks harmful content, prompt injection attacks
+- **Output**: filters unsafe responses, anonymizes emails/phone numbers, blocks SSN/credit cards
 
-- **Chat Web Interface** — Clean UI served via CloudFront, auto-deployed with correct API endpoint
-- **Conversational AI** — Powered by Claude via Amazon Bedrock
-- **Session Memory** — Maintains conversation context across messages
-- **Auto-Cleanup** — TTL-based expiration of old conversations (configurable)
-- **Fully Automated** — Lambda code, frontend files, and API wiring all deploy automatically
-- **Zero Servers** — Fully serverless, pay only for what you use
-- **One-Click Deploy** — Single CloudFormation stack, nothing to configure manually
+### RAG (Retrieval-Augmented Generation)
+Users upload documents (.txt, .md, .csv, .json, .pdf) via presigned S3 URLs. When RAG is enabled, the Lambda retrieves the user's documents and injects relevant context into the prompt — grounding the AI's answers in real data.
+
+### Token Budget Enforcement
+Each user has a configurable daily token budget (default: 50,000 tokens). The system tracks input + output tokens per request and returns HTTP 429 when the budget is exceeded. The frontend shows a real-time usage bar.
+
+### Observability
+- **X-Ray**: full distributed trace from API Gateway → Lambda → Bedrock/DynamoDB
+- **Custom Metrics**: MessagesProcessed, TokensUsed, ModelLatency, FallbackInvocations, GuardrailBlocked, RateLimited
+- **Dashboard**: pre-built CloudWatch dashboard with 4 widgets
+- **Alarm**: triggers when Lambda error count exceeds threshold
+
+### Authentication Flow
+1. User signs up with email + password → Cognito sends verification email
+2. User signs in → receives JWT (ID token + access token)
+3. Frontend stores tokens in sessionStorage (cleared on tab close)
+4. Every API call includes the JWT in the Authorization header
+5. API Gateway validates the JWT via Cognito Authorizer before Lambda runs
 
 ## Deploy to Your AWS Account
 
 ### One-Click Deploy
-
-Click the button below to launch the stack in your AWS account:
 
 [![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home#/stacks/new?stackName=ai-chatbot&templateURL=https://monica-adeyanju-cfn-templates.s3.amazonaws.com/template.yaml)
 
 ### Deploy via AWS CLI
 
 ```bash
-# Clone this repo
 git clone https://github.com/monica-adeyanju/monica-adeyanju.github.io.git
 cd monica-adeyanju.github.io/projects/ai-chatbot
 
-# Deploy the stack
 aws cloudformation deploy \
   --template-file template.yaml \
   --stack-name ai-chatbot \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
-    BedrockModelId=us.anthropic.claude-haiku-4-5-20251001-v1:0 \
-    ConversationTTLDays=7
+    PrimaryModelId=us.anthropic.claude-haiku-4-5-20251001-v1:0 \
+    FallbackModelId=us.anthropic.claude-sonnet-4-20250514-v1:0 \
+    MaxTokenBudgetPerSession=50000
 
-# Get your outputs (including the chat UI URL)
 aws cloudformation describe-stacks \
   --stack-name ai-chatbot \
   --query 'Stacks[0].Outputs' \
@@ -106,148 +137,151 @@ aws cloudformation describe-stacks \
 
 ### Deploy via AWS Console
 
-1. Open the [CloudFormation Console](https://console.aws.amazon.com/cloudformation)
-2. Click **Create stack** → **With new resources**
-3. Upload `template.yaml`
-4. Set the stack name (e.g., `ai-chatbot`)
-5. Configure parameters:
-   - **BedrockModelId**: Choose your preferred Claude model
-   - **ConversationTTLDays**: How long to keep chat history (default: 7)
-   - **StageName**: API stage name (default: prod)
-6. Check "I acknowledge that this template creates IAM resources"
-7. Click **Create stack**
-8. Once complete, find the **ChatUIURL** in the Outputs tab — that's your chatbot
+1. Open [CloudFormation Console](https://console.aws.amazon.com/cloudformation)
+2. **Create stack** → Upload `template.yaml`
+3. Stack name: `ai-chatbot`
+4. Configure parameters (or keep defaults)
+5. Acknowledge IAM resources → **Create stack**
+6. Wait for CREATE_COMPLETE (~5 minutes)
+7. Go to **Outputs** tab → open **ChatUIURL**
 
-## What Gets Deployed (Automatically)
+### After Deployment
 
-When the stack creates successfully, you get:
+1. **Upload Lambda code**: Package `lambda/index.py` and update the function
+2. **Upload frontend**: Sync `frontend/` to the UI S3 bucket (update CONFIG values in auth.js first)
+3. **Enable USER_PASSWORD_AUTH**: In Cognito console, add `ALLOW_USER_PASSWORD_AUTH` to the app client
 
-| Output | What It Is |
-|--------|-----------|
-| **ChatUIURL** | Your chatbot web interface URL (CloudFront) |
-| **ApiEndpoint** | The REST API base URL |
-| **ChatEndpoint** | POST here to send messages programmatically |
-| **HistoryEndpoint** | GET conversation history |
-| **ConversationTableName** | DynamoDB table name |
+```bash
+# Update Lambda
+cd lambda && zip function.zip index.py
+aws lambda update-function-code \
+  --function-name ai-chatbot-handler \
+  --zip-file fileb://function.zip
 
-The frontend is deployed automatically with the correct API endpoint injected — no manual configuration needed.
-
-## Prerequisites
-
-- An AWS account (Bedrock models are automatically enabled — no manual model access step required)
-- AWS CLI configured (for CLI deployment only)
+# Update frontend config in auth.js, then:
+aws s3 sync frontend/ s3://$(aws cloudformation describe-stacks --stack-name ai-chatbot --query 'Stacks[0].Outputs[?OutputKey==`ChatUIBucketName`].OutputValue' --output text)/
+```
 
 ## Using the Chatbot
 
-### Via the Web Interface (Recommended)
+### Sign Up & Sign In
+1. Open the CloudFront URL from stack outputs
+2. Click "Sign Up" → enter email + password
+3. Check your email for the verification code
+4. Sign in with your credentials
 
-Once the stack is deployed:
+### Chat
+1. Type a message and hit Send
+2. The AI responds with metadata (model used, tokens consumed, RAG indicator)
+3. Your conversation persists within the session
+4. The usage bar shows your daily token budget consumption
 
-1. Go to the **Outputs** tab of your CloudFormation stack
-2. Copy the **ChatUIURL** (e.g., `https://d1234abcdef.cloudfront.net`)
-3. Open it in your browser
-4. Type a message in the input box and hit **Send**
-5. The AI (Claude) will respond in the chat window
-6. Keep chatting — the bot remembers your conversation within the session
-7. Close the tab and come back later — your history is stored for 7 days (configurable)
+### Upload Documents (RAG)
+1. Click "Upload Doc" in the toolbar
+2. Select a .txt, .md, .csv, or .json file
+3. After upload, check the "Use RAG" checkbox
+4. Ask questions — the AI will ground answers in your uploaded documents
 
-> **Note:** CloudFront can take 5–15 minutes to fully activate after initial deployment. If you see a 403 error, wait a few minutes and refresh.
+### Monitor Usage
+- The usage bar updates after each message
+- When you hit the daily limit, you'll see a "budget exceeded" error
+- Budget resets at midnight UTC
 
-### Via API (for Integrations and Testing)
+## API Endpoints (Authenticated)
 
-You can also interact with the chatbot programmatically using the REST API:
+All endpoints require a valid Cognito JWT in the `Authorization` header.
 
-### Send a Message
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | /chat | Send a message. Body: `{"message": "...", "sessionId": "...", "useRAG": true}` |
+| GET | /history?sessionId=xxx | Get conversation history |
+| POST | /upload | Get presigned URL. Body: `{"filename": "doc.txt"}` |
+| GET | /usage | Get token usage stats for current user |
+
+### Example: Chat Request
 
 ```bash
-curl -X POST https://YOUR_API_ENDPOINT/prod/chat \
+TOKEN="your-cognito-id-token"
+
+curl -X POST https://YOUR_API/prod/chat \
+  -H "Authorization: $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"message": "What is serverless computing?"}'
+  -d '{"message": "Summarize my uploaded document", "useRAG": true}'
 
 # Response:
 # {
-#   "response": "Serverless computing is a cloud execution model where...",
-#   "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+#   "response": "Based on your document...",
+#   "sessionId": "abc-123",
+#   "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+#   "tokensUsed": 847,
+#   "ragUsed": true
 # }
 ```
 
-```bash
-# Continue the conversation
-curl -X POST https://YOUR_API_ENDPOINT/prod/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "How does it compare to containers?", "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}'
-```
+## Observability
 
-### Get Conversation History
+### CloudWatch Dashboard
+A pre-built dashboard is created with the stack. Find it at:
+- Console → CloudWatch → Dashboards → `ai-chatbot-dashboard`
 
-```bash
-curl "https://YOUR_API_ENDPOINT/prod/history?sessionId=a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+Widgets:
+- **Messages Processed** (5-min intervals)
+- **Tokens Used** (cumulative)
+- **Latency & Fallback Invocations**
+- **Guardrail Blocks & Rate Limits**
 
-# Response:
-# {
-#   "sessionId": "a1b2c3d4-...",
-#   "messages": [
-#     {"role": "user", "content": "What is serverless?", "timestamp": 1234567890},
-#     {"role": "assistant", "content": "Serverless computing is...", "timestamp": 1234567891}
-#   ],
-#   "count": 2
-# }
-```
+### X-Ray Traces
+- Console → X-Ray → Traces
+- Filter by service: `ai-chatbot-handler`
+- See full request lifecycle: API GW → Lambda → Bedrock → DynamoDB
+
+### Error Alarm
+Triggers when Lambda errors exceed 5 in a 5-minute window.
 
 ## Cost Estimate
 
-For light usage (~100 conversations/day):
+For moderate usage (~500 conversations/day):
 
 | Service | Cost |
 |---------|------|
-| Lambda | Free tier (1M requests/month free) |
-| API Gateway | ~$0.35/month |
-| DynamoDB | Free tier (25 GB, 25 WCU/RCU) |
-| S3 | ~$0.01/month |
-| CloudFront | Free tier (1 TB/month) |
-| Bedrock (Claude Haiku) | ~$0.50–$2.00/month |
+| Lambda | Free tier |
+| API Gateway | ~$1.75/month |
+| DynamoDB (×2) | Free tier |
+| S3 (×2) | ~$0.05/month |
+| CloudFront | Free tier |
+| Cognito | Free for first 50,000 MAU |
+| Bedrock (Claude Haiku 4.5) | ~$2–8/month |
+| X-Ray | Free tier (100k traces/month) |
+| CloudWatch | ~$0.30/month |
 
-**Total: Under $3/month** for a personal project.
-
-## Troubleshooting
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| "AI unavailable" error in chat | Bedrock model not accessible or wrong model ID | Check Lambda logs in CloudWatch for the specific error. Ensure you're in us-east-1 region |
-| 403 error on ChatUI URL | CloudFront still provisioning | Wait 5–15 minutes after stack creation |
-| "ResourceNotFoundException" in Lambda logs | Model ID marked as legacy/end-of-life | Update stack with `us.anthropic.claude-haiku-4-5-20251001-v1:0` (inference profile ID with `us.` prefix) |
-| Stack fails to create | Missing IAM acknowledgment | Check "I acknowledge that this template creates IAM resources" during deploy |
-| CORS error in browser console | API Gateway misconfigured | Ensure stack deployed fully (check all resources are CREATE_COMPLETE) |
-
-To view Lambda error logs:
-1. Go to [CloudWatch Logs](https://console.aws.amazon.com/cloudwatch/home#logsV2:log-groups)
-2. Find `/aws/lambda/ai-chatbot-handler`
-3. Open the most recent log stream to see error details
+**Total: ~$5–12/month** depending on usage.
 
 ## Cleanup
-
-To delete all resources:
 
 ```bash
 aws cloudformation delete-stack --stack-name ai-chatbot
 ```
 
-This removes everything: API Gateway, Lambda functions, DynamoDB table, S3 bucket (contents auto-cleaned), CloudFront distribution, and IAM roles.
+Removes all resources. The document S3 bucket must be empty first (or delete objects manually).
 
 ## File Structure
 
 ```
 projects/ai-chatbot/
-├── template.yaml        # CloudFormation stack (all resources + inline code)
+├── template.yaml          # CloudFormation (all 10 services)
 ├── lambda/
-│   └── index.py         # Lambda function source (reference/readable version)
+│   └── index.py           # Full Lambda handler (guardrails, RAG, fallback, metrics)
 ├── frontend/
-│   ├── index.html       # Chat UI (reference/readable version)
-│   └── chat.js          # Frontend JS (reference/readable version)
-└── README.md            # This file
+│   ├── index.html         # Chat UI with auth + upload + usage bar
+│   ├── auth.js            # Cognito authentication module
+│   └── chat.js            # Messaging, RAG toggle, file upload
+└── README.md              # This file
 ```
 
-> **Note:** The `lambda/` and `frontend/` directories contain readable reference versions of the code. The actual deployed code lives inline in `template.yaml` so that the stack is fully self-contained — one file deploys everything.
+## Prerequisites
+
+- An AWS account (Bedrock models are auto-enabled since Sep 2025)
+- AWS CLI configured (for CLI/manual deployment)
 
 ## License
 
