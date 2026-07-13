@@ -604,49 +604,8 @@ Resources:
     Type: AWS::CloudWatch::Dashboard
     Properties:
       DashboardName: !Sub '${AppName}-dashboard'
-      DashboardBody: !Sub |
-        {
-          "widgets": [
-            {
-              "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
-              "properties": {
-                "region": "${AWS::Region}",
-                "metrics": [["${AppName}", "MessagesProcessed", "Service", "Chatbot"]],
-                "period": 300, "stat": "Sum", "title": "Messages Processed"
-              }
-            },
-            {
-              "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
-              "properties": {
-                "region": "${AWS::Region}",
-                "metrics": [["${AppName}", "TokensUsed", "Service", "Chatbot"]],
-                "period": 300, "stat": "Sum", "title": "Tokens Used"
-              }
-            },
-            {
-              "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
-              "properties": {
-                "region": "${AWS::Region}",
-                "metrics": [
-                  ["${AppName}", "ModelLatency", "Service", "Chatbot"],
-                  ["${AppName}", "FallbackInvocations", "Service", "Chatbot"]
-                ],
-                "period": 300, "stat": "Average", "title": "Latency & Fallbacks"
-              }
-            },
-            {
-              "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
-              "properties": {
-                "region": "${AWS::Region}",
-                "metrics": [
-                  ["${AppName}", "GuardrailBlocked", "Service", "Chatbot"],
-                  ["${AppName}", "RateLimited", "Service", "Chatbot"]
-                ],
-                "period": 300, "stat": "Sum", "title": "Guardrail Blocks & Rate Limits"
-              }
-            }
-          ]
-        }
+      DashboardBody:
+        Fn::Sub: '{"widgets":[{"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{"region":"${AWS::Region}","view":"timeSeries","metrics":[["${AppName}","MessagesProcessed","Service","Chatbot"]],"period":300,"stat":"Sum","title":"Messages Processed"}},{"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"region":"${AWS::Region}","view":"timeSeries","metrics":[["${AppName}","TokensUsed","Service","Chatbot"]],"period":300,"stat":"Sum","title":"Tokens Used"}},{"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"region":"${AWS::Region}","view":"timeSeries","metrics":[["${AppName}","ModelLatency","Service","Chatbot"],["${AppName}","FallbackInvocations","Service","Chatbot"]],"period":300,"stat":"Average","title":"Latency and Fallbacks"}},{"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"region":"${AWS::Region}","view":"timeSeries","metrics":[["${AppName}","GuardrailBlocked","Service","Chatbot"],["${AppName}","RateLimited","Service","Chatbot"]],"period":300,"stat":"Sum","title":"Guardrail Blocks and Rate Limits"}}]}'
 
   ErrorAlarm:
     Type: AWS::CloudWatch::Alarm
