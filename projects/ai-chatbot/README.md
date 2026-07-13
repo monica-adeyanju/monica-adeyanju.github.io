@@ -17,35 +17,35 @@ A fully serverless, production-grade AI chatbot built on AWS. Features authentic
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              USER BROWSER                                     │
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              USER BROWSER                                   │
 │   ┌─────────┐    ┌───────────────┐    ┌──────────────┐    ┌──────────────┐  │
 │   │  Login  │    │   Chat UI     │    │  Upload Doc  │    │  Usage Bar   │  │
 │   └────┬────┘    └──────┬────────┘    └──────┬───────┘    └──────┬───────┘  │
 └────────┼────────────────┼────────────────────┼───────────────────┼──────────┘
          │                │                    │                   │
          ▼                ▼                    ▼                   ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CLOUDFRONT (HTTPS CDN)                                │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         CLOUDFRONT (HTTPS CDN)                               │
 │                         ┌─────────────────────┐                              │
 │                         │   S3 (Frontend)     │                              │
 │                         └─────────────────────┘                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────────────────────┘
          │
          │  Authenticated API calls (JWT)
          ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    API GATEWAY + COGNITO AUTHORIZER                           │
-│    POST /chat    GET /history    POST /upload    GET /usage                   │
+│                    API GATEWAY + COGNITO AUTHORIZER                         │
+│    POST /chat    GET /history    POST /upload    GET /usage                 │
 └────────────────────────────────┬────────────────────────────────────────────┘
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         LAMBDA (Python 3.12)                                  │
+│                         LAMBDA (Python 3.12)                                │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │  1. Validate token budget  →  reject if over limit (429)            │    │
 │  │  2. Apply INPUT guardrail  →  block harmful/injection content       │    │
-│  │  3. Retrieve RAG context   →  pull relevant docs from S3           │    │
+│  │  3. Retrieve RAG context   →  pull relevant docs from S3            │    │
 │  │  4. Build conversation     →  load history from DynamoDB            │    │
 │  │  5. Call Bedrock (primary)  →  fallback to secondary on failure     │    │
 │  │  6. Apply OUTPUT guardrail →  filter unsafe responses               │    │
@@ -53,7 +53,7 @@ A fully serverless, production-grade AI chatbot built on AWS. Features authentic
 │  │  8. Track token usage       →  DynamoDB usage table                 │    │
 │  │  9. Emit metrics            →  CloudWatch custom metrics            │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
-│                          X-Ray Tracing Active                                 │
+│                          X-Ray Tracing Active                               │
 └────────┬──────────────┬──────────────┬──────────────┬───────────────────────┘
          │              │              │              │
          ▼              ▼              ▼              ▼
