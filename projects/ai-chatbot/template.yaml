@@ -66,6 +66,47 @@ Resources:
         - Name: email
           Required: true
           Mutable: true
+      LambdaConfig:
+        PreSignUp: !GetAtt AutoConfirmFunction.Arn
+
+  # Auto-confirm users on sign-up (no email verification required)
+  AutoConfirmFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AppName}-auto-confirm'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 5
+      MemorySize: 128
+      Role: !GetAtt AutoConfirmRole.Arn
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              event["response"]["autoConfirmUser"] = True
+              event["response"]["autoVerifyEmail"] = True
+              return event
+
+  AutoConfirmRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-auto-confirm-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  AutoConfirmPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AutoConfirmFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
